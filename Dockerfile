@@ -36,12 +36,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Tell Playwright to skip downloading its bundled browser (we use system Chromium)
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV CHROMIUM_PATH=/usr/bin/chromium
-ENV NODE_ENV=production
 ENV PORT=3001
+# NOTE: NODE_ENV is intentionally NOT set here.
+# Setting NODE_ENV=production before "npm ci" causes npm to skip devDependencies
+# (including vite), which breaks the frontend build.
+# NODE_ENV=production is set at runtime via Railway environment variables instead.
 
 WORKDIR /app
 
 # ── 1. Build the React frontend ───────────────────────────────────────────────
+# Run npm ci WITHOUT NODE_ENV=production so devDependencies (vite, tailwind, etc.)
+# are installed and the build can complete successfully.
 COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm ci
 
