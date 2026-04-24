@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Data Intelligence — Exhibitor Extractor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; }
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; font-family: inherit; }
+
+/* Nav */
+nav { background: #0d1117; border-bottom: 1px solid #2d3748; padding: 0 24px; display: flex; gap: 0; }
+.nav-link { padding: 12px 16px; font-size: 13px; color: #718096; border-bottom: 2px solid transparent; }
+.nav-link:hover { color: #e2e8f0; }
+.nav-link.active { color: #4299e1; border-bottom-color: #4299e1; }
+
+/* Page */
+.page { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.page-header { margin-bottom: 24px; }
+.page-header h1 { font-size: 22px; font-weight: 700; color: #fff; }
+.page-header p  { font-size: 13px; color: #718096; margin-top: 4px; }
+
+/* Stats overview */
+.overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.stat-card { background: #161b27; border: 1px solid #2d3748; border-radius: 10px; padding: 16px; }
+.sc-label { font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.4px; }
+.sc-value { font-size: 28px; font-weight: 800; color: #fff; margin-top: 4px; }
+.sc-sub   { font-size: 11px; color: #4299e1; margin-top: 2px; }
+.sc-blue  .sc-value { color: #63b3ed; }
+.sc-green .sc-value { color: #68d391; }
+.sc-amber .sc-value { color: #f6ad55; }
+.sc-purple.sc-value { color: #b794f4; }
+
+/* Charts grid */
+.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }
+@media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
+.chart-card { background: #161b27; border: 1px solid #2d3748; border-radius: 10px; padding: 20px; }
+.chart-card h3 { font-size: 13px; font-weight: 600; color: #a0aec0; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.4px; }
+.chart-card canvas { width: 100% !important; }
+
+/* Event selector */
+.event-selector { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+.event-selector label { font-size: 13px; color: #718096; }
+.event-selector select { background: #1e2535; border: 1px solid #2d3748; color: #e2e8f0; padding: 7px 12px; border-radius: 6px; font-size: 13px; outline: none; }
+.event-selector select:focus { border-color: #4299e1; }
+
+/* Table */
+.table-card { background: #161b27; border: 1px solid #2d3748; border-radius: 10px; overflow: hidden; margin-bottom: 28px; }
+.table-card h3 { font-size: 13px; font-weight: 600; color: #a0aec0; padding: 16px 20px; text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid #2d3748; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: #161b27; color: #718096; text-align: left; padding: 8px 16px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+td { padding: 9px 16px; border-bottom: 1px solid #1e2535; color: #e2e8f0; }
+tr:hover td { background: #1a2030; }
+tr:last-child td { border-bottom: none; }
+.platform-badge { display: inline-block; background: #2d3748; color: #a0aec0; font-size: 10px; padding: 2px 7px; border-radius: 4px; }
+.pct-bar { display: flex; align-items: center; gap: 8px; }
+.bar-track { height: 6px; background: #2d3748; border-radius: 3px; flex: 1; min-width: 80px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 3px; }
+.fill-high   { background: #48bb78; }
+.fill-medium { background: #ed8936; }
+.fill-low    { background: #e53e3e; }
+.website-link { color: #4299e1; font-size: 12px; }
+.website-link:hover { text-decoration: underline; }
+
+/* Search */
+.search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+.search-bar input { flex: 1; background: #1e2535; border: 1px solid #2d3748; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 13px; outline: none; }
+.search-bar input:focus { border-color: #4299e1; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; font-size: 13px; border: none; font-weight: 500; cursor: pointer; }
+.btn-primary { background: #3182ce; color: #fff; }
+.btn-primary:hover { background: #2b6cb0; }
+
+/* Loading */
+.loading { text-align: center; padding: 40px; color: #4a5568; font-size: 14px; }
+.spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #2d3748; border-top-color: #4299e1; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="/" class="nav-link">⚡ Extractor</a>
+  <a href="/history.html" class="nav-link">📋 History</a>
+  <a href="/intelligence.html" class="nav-link active">📊 Intelligence</a>
+</nav>
+
+<div class="page">
+  <div class="page-header">
+    <h1>📊 Data Intelligence</h1>
+    <p>Aggregate metrics, trends, and insights across all your extractions</p>
+  </div>
+
+  <!-- Overview stats -->
+  <div class="overview-grid" id="overviewGrid">
+    <div class="loading"><div class="spinner"></div><br/>Loading…</div>
+  </div>
+
+  <!-- Event selector for per-event charts -->
+  <div class="event-selector">
+    <label>Per-event analysis:</label>
+    <select id="eventSelect" onchange="loadEventCharts()">
+      <option value="">— Select an event —</option>
+    </select>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-grid" id="chartsGrid" style="display:none">
+    <div class="chart-card">
+      <h3>📈 Exhibitor Count Over Time</h3>
+      <canvas id="chartCount" height="220"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>🌐 Website Coverage Over Time</h3>
+      <canvas id="chartWebsite" height="220"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>🏢 Platform Distribution</h3>
+      <canvas id="chartPlatform" height="220"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>📋 Completeness Score History</h3>
+      <canvas id="chartCompleteness" height="220"></canvas>
+    </div>
+  </div>
+
+  <!-- Recent Activity Table -->
+  <div class="table-card">
+    <h3>⚡ Recent Extractions</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Event</th><th>Date</th><th>Count</th><th>Website Coverage</th><th>Platform</th></tr>
+        </thead>
+        <tbody id="recentTable"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Global Search -->
+  <div class="table-card">
+    <h3>🔍 Search All Exhibitors</h3>
+    <div style="padding: 16px;">
+      <div class="search-bar">
+        <input type="text" id="globalSearch" placeholder="Search by name or website…" onkeydown="if(event.key==='Enter')doSearch()"/>
+        <button class="btn btn-primary" onclick="doSearch()">Search</button>
+      </div>
+      <div id="searchResults"></div>
+    </div>
+  </div>
+
+  <!-- Top Performers -->
+  <div class="table-card" id="topCard" style="display:none">
+    <h3>🏆 Events with Most Exhibitors</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Event</th><th>Latest Count</th><th>Total Runs</th><th>Best Coverage</th></tr>
+        </thead>
+        <tbody id="topTable"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// Chart.js defaults
+Chart.defaults.color = '#718096';
+Chart.defaults.borderColor = '#2d3748';
+Chart.defaults.font.family = "'Segoe UI', system-ui, sans-serif";
+
+let charts = {};
+
+async function api(path) {
+  const res = await fetch('/api/history' + path);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function pct(a, b) { return b ? Math.round((a/b)*100) : 0; }
+
+function barHtml(p) {
+  const cls = p>=70?'fill-high':p>=40?'fill-medium':'fill-low';
+  return `<div class="pct-bar"><div class="bar-track"><div class="bar-fill ${cls}" style="width:${p}%"></div></div><span style="font-size:12px;color:#a0aec0;min-width:35px">${p}%</span></div>`;
+}
+
+function platformLabel(p) {
+  const m = { a2z:'a2zinc', mys:'MapYourShow', goexpo:'GoExpo', expofp:'ExpoFP', expocad:'ExpoCad', eventscribe:'EventScribe', bizzabo:'Bizzabo', ungerboeck:'Ungerboeck', generic:'Generic' };
+  return m[p] || p || 'Unknown';
+}
+
+// ── Load overview stats ────────────────────────────────────────────────────────
+async function loadOverview() {
+  try {
+    const stats  = await api('/stats');
+    const events = await api('/events');
+
+    // Populate event selector
+    const sel = document.getElementById('eventSelect');
+    events.forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e.id;
+      opt.textContent = e.event_name;
+      sel.appendChild(opt);
+    });
+
+    const webPct = stats.totalExhibitors ? pct(stats.withWebsite, stats.totalExhibitors) : 0;
+
+    document.getElementById('overviewGrid').innerHTML = `
+      <div class="stat-card sc-blue">
+        <div class="sc-label">Total Events</div>
+        <div class="sc-value">${stats.totalEvents.toLocaleString()}</div>
+      </div>
+      <div class="stat-card">
+        <div class="sc-label">Total Extractions</div>
+        <div class="sc-value">${stats.totalExtractions.toLocaleString()}</div>
+      </div>
+      <div class="stat-card">
+        <div class="sc-label">Total Exhibitors</div>
+        <div class="sc-value">${stats.totalExhibitors.toLocaleString()}</div>
+      </div>
+      <div class="stat-card sc-green">
+        <div class="sc-label">With Websites</div>
+        <div class="sc-value">${stats.withWebsite.toLocaleString()}</div>
+        <div class="sc-sub">${webPct}% coverage</div>
+      </div>
+    `;
+
+    // Recent table
+    const tbody = document.getElementById('recentTable');
+    if (!stats.recentActivity.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#4a5568;padding:24px">No extractions yet. Run your first extraction!</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = stats.recentActivity.map(r => `
+      <tr>
+        <td>${esc(r.event_name)}</td>
+        <td style="color:#718096">${new Date(r.extraction_date).toLocaleString([], {dateStyle:'medium',timeStyle:'short'})}</td>
+        <td><strong>${r.total_count.toLocaleString()}</strong></td>
+        <td>—</td>
+        <td><span class="platform-badge">${platformLabel(r.platform)}</span></td>
+      </tr>
+    `).join('');
+
+    // Top events table
+    if (events.length > 0) {
+      document.getElementById('topCard').style.display = '';
+      document.getElementById('topTable').innerHTML = events
+        .sort((a, b) => (b.extraction_count || 0) - (a.extraction_count || 0))
+        .slice(0, 10)
+        .map(e => `
+          <tr>
+            <td><a href="/history.html" style="color:#4299e1">${esc(e.event_name)}</a></td>
+            <td>—</td>
+            <td>${e.extraction_count}</td>
+            <td>—</td>
+          </tr>
+        `).join('');
+    }
+
+    // Platform distribution chart (use recent data)
+    const platformCounts = {};
+    stats.recentActivity.forEach(r => {
+      const p = platformLabel(r.platform);
+      platformCounts[p] = (platformCounts[p] || 0) + 1;
+    });
+    renderPlatformChart(platformCounts);
+
+  } catch (e) {
+    document.getElementById('overviewGrid').innerHTML = `<div style="color:#fc8181;padding:20px">Failed to load stats: ${e.message}</div>`;
+  }
+}
+
+// ── Per-event charts ──────────────────────────────────────────────────────────
+async function loadEventCharts() {
+  const eventId = document.getElementById('eventSelect').value;
+  if (!eventId) {
+    document.getElementById('chartsGrid').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('chartsGrid').style.display = '';
+
+  try {
+    const trend = await api(`/events/${eventId}/stats`);
+
+    if (trend.length === 0) {
+      document.getElementById('chartsGrid').innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:40px;color:#4a5568">No trend data yet. Run at least 2 extractions for this event.</div>`;
+      return;
+    }
+
+    const labels = trend.map(t => new Date(t.extraction_date).toLocaleDateString());
+    const counts  = trend.map(t => t.total_count);
+    const webPcts = trend.map(t => t.completeness);
+
+    destroyChart('chartCount');
+    destroyChart('chartWebsite');
+    destroyChart('chartCompleteness');
+
+    charts.chartCount = new Chart(document.getElementById('chartCount'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Exhibitors',
+          data: counts,
+          borderColor: '#4299e1',
+          backgroundColor: 'rgba(66,153,225,0.15)',
+          tension: 0.3,
+          fill: true,
+          pointBackgroundColor: '#4299e1',
+          pointRadius: 4,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: '#2d3748' } },
+          y: { grid: { color: '#2d3748' }, beginAtZero: false },
+        },
+      },
+    });
+
+    charts.chartWebsite = new Chart(document.getElementById('chartWebsite'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Website %',
+          data: webPcts,
+          borderColor: '#68d391',
+          backgroundColor: 'rgba(104,211,145,0.15)',
+          tension: 0.3,
+          fill: true,
+          pointBackgroundColor: '#68d391',
+          pointRadius: 4,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: '#2d3748' } },
+          y: { grid: { color: '#2d3748' }, min: 0, max: 100, ticks: { callback: v => v + '%' } },
+        },
+      },
+    });
+
+    charts.chartCompleteness = new Chart(document.getElementById('chartCompleteness'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'With Website',
+            data: trend.map(t => t.website_count),
+            backgroundColor: '#48bb78',
+          },
+          {
+            label: 'Without Website',
+            data: trend.map(t => t.total_count - t.website_count),
+            backgroundColor: '#e53e3e',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { labels: { color: '#a0aec0' } } },
+        scales: {
+          x: { stacked: true, grid: { color: '#2d3748' } },
+          y: { stacked: true, grid: { color: '#2d3748' } },
+        },
+      },
+    });
+
+  } catch (e) {
+    document.getElementById('chartsGrid').innerHTML = `<div style="color:#fc8181;padding:20px;grid-column:1/-1">Failed to load trend data: ${e.message}</div>`;
+  }
+}
+
+function renderPlatformChart(data) {
+  const labels = Object.keys(data);
+  const values = Object.values(data);
+  const colors = ['#4299e1','#68d391','#f6ad55','#b794f4','#fc8181','#63b3ed','#fbd38d'];
+
+  destroyChart('chartPlatform');
+  charts.chartPlatform = new Chart(document.getElementById('chartPlatform'), {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors.slice(0, labels.length),
+        borderColor: '#161b27',
+        borderWidth: 3,
+      }],
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: '#a0aec0', padding: 12, boxWidth: 12 },
+        },
+      },
+    },
+  });
+}
+
+function destroyChart(id) {
+  if (charts[id]) {
+    charts[id].destroy();
+    delete charts[id];
+  }
+}
+
+// ── Global search ─────────────────────────────────────────────────────────────
+async function doSearch() {
+  const q = document.getElementById('globalSearch').value.trim();
+  if (!q) return;
+
+  document.getElementById('searchResults').innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+
+  try {
+    const results = await api(`/search?q=${encodeURIComponent(q)}&limit=100`);
+    if (!results.length) {
+      document.getElementById('searchResults').innerHTML = `<p style="color:#4a5568;font-size:13px;padding:12px 0">No results for "${esc(q)}"</p>`;
+      return;
+    }
+    document.getElementById('searchResults').innerHTML = `
+      <p style="font-size:12px;color:#718096;margin-bottom:10px">${results.length} result${results.length!==1?'s':''} for "${esc(q)}"</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Event</th><th>Booth</th><th>Website</th><th>Date</th></tr></thead>
+          <tbody>${results.map(r => `
+            <tr>
+              <td>${esc(r.name)}</td>
+              <td style="color:#718096">${esc(r.event_name)}</td>
+              <td>${esc(r.booth_number)||'—'}</td>
+              <td>${r.website ? `<a href="${esc(r.website)}" target="_blank" class="website-link">${esc(r.website)}</a>` : '—'}</td>
+              <td style="color:#718096;font-size:12px">${new Date(r.extraction_date).toLocaleDateString()}</td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+      </div>`;
+  } catch (e) {
+    document.getElementById('searchResults').innerHTML = `<p style="color:#fc8181;font-size:13px">Search error: ${e.message}</p>`;
+  }
+}
+
+document.getElementById('globalSearch').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadOverview();
+</script>
+</body>
+</html>

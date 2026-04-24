@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>History Intelligence — Exhibitor Extractor</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; }
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; font-family: inherit; }
+input, select, textarea { font-family: inherit; }
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.layout { display: grid; grid-template-columns: 280px 1fr; height: 100vh; overflow: hidden; }
+.sidebar { background: #161b27; border-right: 1px solid #2d3748; display: flex; flex-direction: column; overflow: hidden; }
+.main { overflow-y: auto; display: flex; flex-direction: column; }
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+.sidebar-header { padding: 16px; border-bottom: 1px solid #2d3748; }
+.sidebar-header h1 { font-size: 15px; font-weight: 700; color: #fff; letter-spacing: 0.3px; }
+.sidebar-header .sub { font-size: 11px; color: #718096; margin-top: 2px; }
+.search-box { padding: 10px 12px; border-bottom: 1px solid #2d3748; }
+.search-box input { width: 100%; background: #1e2535; border: 1px solid #2d3748; border-radius: 6px; padding: 7px 10px; color: #e2e8f0; font-size: 12px; outline: none; }
+.search-box input:focus { border-color: #4299e1; }
+.events-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+.events-list::-webkit-scrollbar { width: 4px; }
+.events-list::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 2px; }
+
+.event-item { padding: 10px 14px; cursor: pointer; border-left: 3px solid transparent; transition: all 0.15s; }
+.event-item:hover { background: #1e2535; }
+.event-item.active { background: #1a2744; border-left-color: #4299e1; }
+.event-item .evt-name { font-size: 13px; font-weight: 600; color: #e2e8f0; line-height: 1.3; }
+.event-item .evt-meta { font-size: 11px; color: #718096; margin-top: 3px; }
+.event-item .evt-badge { display: inline-block; background: #2d3748; color: #a0aec0; font-size: 10px; padding: 1px 6px; border-radius: 10px; }
+
+.sidebar-footer { padding: 10px 12px; border-top: 1px solid #2d3748; }
+.btn-refresh { width: 100%; background: #2d3748; border: none; color: #a0aec0; padding: 7px; border-radius: 6px; font-size: 12px; }
+.btn-refresh:hover { background: #4a5568; }
+
+/* ── Main Header ──────────────────────────────────────────────── */
+.main-header { padding: 20px 24px 16px; border-bottom: 1px solid #2d3748; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.main-header h2 { font-size: 18px; font-weight: 700; color: #fff; flex: 1; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 6px; font-size: 13px; border: none; font-weight: 500; transition: all 0.15s; }
+.btn-primary   { background: #3182ce; color: #fff; }
+.btn-primary:hover { background: #2b6cb0; }
+.btn-success   { background: #276749; color: #9ae6b4; }
+.btn-success:hover { background: #22543d; }
+.btn-danger    { background: #742a2a; color: #feb2b2; }
+.btn-danger:hover { background: #5c2323; }
+.btn-ghost     { background: transparent; color: #718096; border: 1px solid #2d3748; }
+.btn-ghost:hover { background: #2d3748; color: #e2e8f0; }
+.btn-orange    { background: #7b341e; color: #fbd38d; }
+.btn-orange:hover { background: #652c16; }
+
+/* ── Stats Strip ──────────────────────────────────────────────── */
+.stats-strip { display: flex; gap: 12px; padding: 14px 24px; border-bottom: 1px solid #2d3748; flex-wrap: wrap; }
+.stat-card { background: #161b27; border: 1px solid #2d3748; border-radius: 8px; padding: 10px 16px; min-width: 130px; }
+.stat-card .sc-label { font-size: 11px; color: #718096; }
+.stat-card .sc-value { font-size: 22px; font-weight: 700; color: #fff; margin-top: 2px; }
+.stat-card .sc-sub { font-size: 11px; color: #4299e1; margin-top: 1px; }
+.stat-card.green .sc-value { color: #68d391; }
+.stat-card.blue  .sc-value { color: #63b3ed; }
+.stat-card.amber .sc-value { color: #f6ad55; }
+
+/* ── Section ──────────────────────────────────────────────────── */
+.section { padding: 20px 24px; }
+.section-title { font-size: 13px; font-weight: 600; color: #718096; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 12px; }
+
+/* ── Extractions Timeline ─────────────────────────────────────── */
+.timeline { display: flex; flex-direction: column; gap: 8px; }
+.timeline-item { background: #161b27; border: 1px solid #2d3748; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; cursor: pointer; transition: all 0.15s; }
+.timeline-item:hover { border-color: #4a5568; }
+.timeline-item.selected { border-color: #4299e1; background: #1a2744; }
+.timeline-item .ti-date { font-size: 12px; color: #718096; min-width: 130px; }
+.timeline-item .ti-count { font-size: 20px; font-weight: 700; color: #fff; min-width: 50px; }
+.timeline-item .ti-bar { flex: 1; }
+.ti-bar-inner { height: 6px; background: #2d3748; border-radius: 3px; overflow: hidden; }
+.ti-bar-fill { height: 100%; background: linear-gradient(90deg, #3182ce, #805ad5); border-radius: 3px; transition: width 0.4s; }
+.ti-web-pct { font-size: 11px; color: #a0aec0; margin-top: 3px; }
+.timeline-item .ti-platform { font-size: 11px; background: #2d3748; color: #a0aec0; padding: 2px 7px; border-radius: 4px; }
+.timeline-item .ti-actions { display: flex; gap: 6px; }
+.ti-check { width: 18px; height: 18px; border: 2px solid #4a5568; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.15s; }
+.ti-check.checked { background: #3182ce; border-color: #3182ce; }
+
+/* ── Compare Bar ──────────────────────────────────────────────── */
+.compare-bar { background: #1a2744; border: 1px solid #3182ce; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.compare-bar.hidden { display: none; }
+.compare-bar span { font-size: 13px; color: #90cdf4; flex: 1; }
+
+/* ── Delta Report ─────────────────────────────────────────────── */
+.delta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.delta-card { background: #161b27; border: 1px solid #2d3748; border-radius: 8px; padding: 12px; text-align: center; }
+.delta-card .dc-num { font-size: 28px; font-weight: 800; }
+.delta-card .dc-label { font-size: 11px; color: #718096; margin-top: 2px; }
+.dc-green  { color: #68d391; }
+.dc-red    { color: #fc8181; }
+.dc-blue   { color: #63b3ed; }
+.dc-amber  { color: #f6ad55; }
+.dc-purple { color: #b794f4; }
+
+/* ── Tabs ─────────────────────────────────────────────────────── */
+.tabs { display: flex; gap: 0; border-bottom: 1px solid #2d3748; margin-bottom: 16px; }
+.tab { padding: 8px 16px; font-size: 13px; font-weight: 500; color: #718096; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+.tab:hover { color: #e2e8f0; }
+.tab.active { color: #4299e1; border-bottom-color: #4299e1; }
+
+/* ── Table ────────────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: #161b27; color: #718096; text-align: left; padding: 8px 12px; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; position: sticky; top: 0; }
+td { padding: 8px 12px; border-bottom: 1px solid #1e2535; color: #e2e8f0; }
+tr:hover td { background: #161b27; }
+.tag-new     { display: inline-block; background: #22543d; color: #9ae6b4; font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+.tag-removed { display: inline-block; background: #742a2a; color: #feb2b2; font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+.tag-updated { display: inline-block; background: #744210; color: #fbd38d; font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+.website-link { color: #4299e1; font-size: 12px; }
+.website-link:hover { text-decoration: underline; }
+.confidence-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.conf-high   { background: #68d391; }
+.conf-med    { background: #f6ad55; }
+.conf-low    { background: #fc8181; }
+
+/* ── Completeness Bar ─────────────────────────────────────────── */
+.completeness { display: flex; align-items: center; gap: 8px; }
+.cbar { height: 8px; background: #2d3748; border-radius: 4px; flex: 1; overflow: hidden; }
+.cbar-fill { height: 100%; border-radius: 4px; }
+.cbar-fill.high   { background: #48bb78; }
+.cbar-fill.medium { background: #ed8936; }
+.cbar-fill.low    { background: #e53e3e; }
+
+/* ── Empty State ──────────────────────────────────────────────── */
+.empty-state { text-align: center; padding: 60px 24px; color: #4a5568; }
+.empty-state .es-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-state h3 { font-size: 16px; color: #718096; margin-bottom: 6px; }
+.empty-state p  { font-size: 13px; }
+
+/* ── Welcome ──────────────────────────────────────────────────── */
+.welcome { padding: 40px 24px; text-align: center; }
+.welcome h2 { font-size: 22px; color: #fff; margin-bottom: 8px; }
+.welcome p  { font-size: 14px; color: #718096; max-width: 400px; margin: 0 auto; }
+
+/* ── Enrichment Panel ─────────────────────────────────────────── */
+.enrich-panel { background: #161b27; border: 1px solid #2d3748; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.enrich-panel h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #e2e8f0; }
+.enrich-progress { background: #2d3748; border-radius: 4px; height: 8px; overflow: hidden; margin: 8px 0; }
+.enrich-progress-fill { height: 100%; background: linear-gradient(90deg, #3182ce, #805ad5); transition: width 0.3s; }
+.enrich-status { font-size: 12px; color: #a0aec0; }
+
+/* ── Toast ────────────────────────────────────────────────────── */
+#toast { position: fixed; bottom: 24px; right: 24px; background: #2d3748; color: #e2e8f0; padding: 12px 18px; border-radius: 8px; font-size: 13px; box-shadow: 0 4px 24px rgba(0,0,0,0.4); transform: translateY(80px); opacity: 0; transition: all 0.3s; z-index: 999; max-width: 320px; }
+#toast.show { transform: translateY(0); opacity: 1; }
+#toast.success { border-left: 4px solid #68d391; }
+#toast.error   { border-left: 4px solid #fc8181; }
+
+/* ── Modal ────────────────────────────────────────────────────── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal-overlay.hidden { display: none; }
+.modal { background: #161b27; border: 1px solid #2d3748; border-radius: 10px; padding: 24px; width: 480px; max-width: 95vw; }
+.modal h3 { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+.modal input { width: 100%; background: #1e2535; border: 1px solid #2d3748; color: #e2e8f0; padding: 8px 12px; border-radius: 6px; font-size: 13px; outline: none; margin-bottom: 12px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ── Nav ──────────────────────────────────────────────────────── */
+nav { background: #0d1117; border-bottom: 1px solid #2d3748; padding: 0 24px; display: flex; gap: 0; }
+.nav-link { padding: 12px 16px; font-size: 13px; color: #718096; border-bottom: 2px solid transparent; }
+.nav-link:hover { color: #e2e8f0; }
+.nav-link.active { color: #4299e1; border-bottom-color: #4299e1; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2d3748; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <a href="index.html" class="nav-link">⚡ Extractor</a>
+  <a href="history.html" class="nav-link active">📋 History</a>
+  <a href="intelligence.html" class="nav-link">📊 Intelligence</a>
+</nav>
+
+<div class="layout">
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>📋 Event History</h1>
+      <div class="sub" id="sidebarSub">Loading events…</div>
+    </div>
+    <div class="search-box">
+      <input type="text" id="sidebarSearch" placeholder="🔍  Filter events…" oninput="filterEvents()"/>
+    </div>
+    <div class="events-list" id="eventsList"></div>
+    <div class="sidebar-footer">
+      <button class="btn-refresh" onclick="loadEvents()">↺  Refresh</button>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <main class="main" id="mainContent">
+    <div class="welcome">
+      <div style="font-size:48px;margin-bottom:12px;">📋</div>
+      <h2>History Intelligence</h2>
+      <p>Select an event from the sidebar to view its extraction history, compare runs, and track exhibitor changes over time.</p>
+    </div>
+  </main>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Rename Modal -->
+<div class="modal-overlay hidden" id="renameModal">
+  <div class="modal">
+    <h3>Rename Event</h3>
+    <input type="text" id="renameInput" placeholder="New event name"/>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeRenameModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmRename()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let allEvents        = [];
+let activeEventId    = null;
+let selectedExIds    = [];      // for comparison (max 2)
+let activeTab        = 'all';   // 'all' | 'new' | 'removed' | 'updated'
+let renameTargetId   = null;
+let lastCompareData  = null;
+let currentExtId     = null;    // extraction currently viewed in detail
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const res = await fetch('/api/history' + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className   = `show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 3000);
+}
+
+// ── Events: load & render ─────────────────────────────────────────────────────
+async function loadEvents() {
+  try {
+    allEvents = await api('/events');
+    renderSidebar(allEvents);
+    const sub = document.getElementById('sidebarSub');
+    sub.textContent = `${allEvents.length} event${allEvents.length !== 1 ? 's' : ''}`;
+  } catch (e) {
+    showToast('Failed to load events: ' + e.message, 'error');
+  }
+}
+
+function filterEvents() {
+  const q = document.getElementById('sidebarSearch').value.toLowerCase();
+  renderSidebar(allEvents.filter(e => e.event_name.toLowerCase().includes(q)));
+}
+
+function renderSidebar(events) {
+  const list = document.getElementById('eventsList');
+  if (!events.length) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:#4a5568;font-size:13px;">No events yet.<br/>Run an extraction to get started.</div>`;
+    return;
+  }
+  list.innerHTML = events.map(e => {
+    const date = e.last_extracted
+      ? new Date(e.last_extracted).toLocaleDateString()
+      : '—';
+    return `<div class="event-item ${e.id === activeEventId ? 'active' : ''}" onclick="selectEvent(${e.id})">
+      <div class="evt-name">${esc(e.event_name)}</div>
+      <div class="evt-meta">${date} &nbsp;<span class="evt-badge">${e.extraction_count} run${e.extraction_count !== 1 ? 's' : ''}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ── Select event ──────────────────────────────────────────────────────────────
+async function selectEvent(id) {
+  activeEventId  = id;
+  selectedExIds  = [];
+  lastCompareData = null;
+
+  // highlight sidebar
+  document.querySelectorAll('.event-item').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.event-item').forEach(el => {
+    if (el.onclick.toString().includes(`(${id})`)) el.classList.add('active');
+  });
+  renderSidebar(allEvents.filter(e =>
+    document.getElementById('sidebarSearch').value
+      ? e.event_name.toLowerCase().includes(document.getElementById('sidebarSearch').value.toLowerCase())
+      : true
+  ));
+
+  try {
+    const event = await api(`/events/${id}`);
+    renderEventView(event);
+  } catch (e) {
+    showToast('Failed to load event: ' + e.message, 'error');
+  }
+}
+
+// ── Event view ────────────────────────────────────────────────────────────────
+function renderEventView(event) {
+  const ex = event.extractions || [];
+  const maxCount = Math.max(...ex.map(x => x.total_count), 1);
+
+  const main = document.getElementById('mainContent');
+  main.innerHTML = `
+    <div class="main-header">
+      <h2>${esc(event.event_name)}</h2>
+      <button class="btn btn-ghost" onclick="openRenameModal(${event.id}, '${esc(event.event_name).replace(/'/g,"\\'")}')">✏️ Rename</button>
+      <button class="btn btn-danger" onclick="deleteEvent(${event.id})">🗑 Delete Event</button>
+    </div>
+
+    <div class="stats-strip">
+      <div class="stat-card">
+        <div class="sc-label">Total Runs</div>
+        <div class="sc-value blue">${ex.length}</div>
+      </div>
+      <div class="stat-card">
+        <div class="sc-label">Latest Count</div>
+        <div class="sc-value">${ex[0]?.total_count ?? '—'}</div>
+        <div class="sc-sub">${ex[0] ? platformBadgeText(ex[0].platform) : ''}</div>
+      </div>
+      <div class="stat-card green">
+        <div class="sc-label">Website Coverage</div>
+        <div class="sc-value">${ex[0] ? pct(ex[0].website_count, ex[0].total_count) + '%' : '—'}</div>
+      </div>
+      <div class="stat-card amber">
+        <div class="sc-label">Growth vs Prev</div>
+        <div class="sc-value">${ex.length >= 2 ? growthStr(ex[0].total_count, ex[1].total_count) : '—'}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="compare-bar hidden" id="compareBar">
+        <span id="compareBarLabel">Select 2 extractions to compare</span>
+        <button class="btn btn-primary" id="compareBtn" onclick="runCompare()" style="display:none">⚖️ Compare</button>
+        <button class="btn btn-ghost" onclick="clearCompare()">✕ Clear</button>
+      </div>
+
+      <div class="section-title">Extraction Timeline</div>
+      <div class="timeline" id="timeline">
+        ${ex.length === 0
+          ? `<div class="empty-state"><div class="es-icon">📭</div><h3>No extractions yet</h3><p>Run an extraction for this event to get started.</p></div>`
+          : ex.map((x, i) => `
+            <div class="timeline-item" id="titem-${x.id}" onclick="openExtraction(${x.id}, event)">
+              <div class="ti-check ${selectedExIds.includes(x.id) ? 'checked' : ''}" id="check-${x.id}" onclick="toggleSelect(${x.id}, event)" title="Select to compare">
+                ${selectedExIds.includes(x.id) ? '✓' : ''}
+              </div>
+              <div class="ti-date">
+                📅 ${formatDateTime(x.extraction_date)}<br/>
+                <small style="color:#4a5568">${timeAgo(x.extraction_date)}</small>
+              </div>
+              <div class="ti-count">${x.total_count.toLocaleString()}</div>
+              <div class="ti-bar">
+                <div class="ti-bar-inner">
+                  <div class="ti-bar-fill" style="width:${Math.round((x.total_count/maxCount)*100)}%"></div>
+                </div>
+                <div class="ti-web-pct">🌐 ${pct(x.website_count, x.total_count)}% have websites</div>
+              </div>
+              <div class="ti-platform">${platformBadgeText(x.platform)}</div>
+              <div class="ti-actions">
+                <button class="btn btn-orange" onclick="openEnrichPanel(${x.id}, event)" title="Enrich missing websites">🔍 Enrich</button>
+                <button class="btn btn-danger" onclick="deleteExtraction(${x.id}, ${event.id}, event)" title="Delete">🗑</button>
+              </div>
+            </div>
+          `).join('')}
+      </div>
+    </div>
+
+    <!-- Detail panel (compare or exhibitor table) -->
+    <div class="section" id="detailSection" style="display:none"></div>
+  `;
+}
+
+// ── Extraction detail ─────────────────────────────────────────────────────────
+async function openExtraction(id, ev) {
+  // don't trigger when clicking checkbox or buttons
+  if (ev?.target?.closest('.ti-check, button, .btn')) return;
+
+  try {
+    currentExtId = id;
+    const data = await api(`/extractions/${id}`);
+    renderExtractionDetail(data);
+    document.getElementById('detailSection').style.display = '';
+    document.getElementById('detailSection').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    showToast('Failed to load extraction: ' + e.message, 'error');
+  }
+}
+
+function renderExtractionDetail(data) {
+  const ex   = data.exhibitors || [];
+  const sect = document.getElementById('detailSection');
+
+  const websitePct = pct(ex.filter(e => e.website).length, ex.length);
+
+  sect.innerHTML = `
+    <div class="section-title">
+      Extraction — ${formatDateTime(data.extraction_date)} &nbsp;·&nbsp; ${ex.length.toLocaleString()} exhibitors
+      <button class="btn btn-ghost" style="margin-left:12px;padding:4px 10px;font-size:12px;" onclick="exportCsv(${data.id})">⬇ Export CSV</button>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:12px;color:#718096">Website coverage:</span>
+      <div class="completeness" style="flex:1;max-width:300px;">
+        <div class="cbar"><div class="cbar-fill ${websitePct>=70?'high':websitePct>=40?'medium':'low'}" style="width:${websitePct}%"></div></div>
+        <span style="font-size:12px;color:#a0aec0;min-width:35px">${websitePct}%</span>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Name</th>
+            <th>Booth</th>
+            <th>Size</th>
+            <th>Website</th>
+            <th>Confidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ex.map((e,i) => `
+            <tr>
+              <td style="color:#4a5568">${i+1}</td>
+              <td>${esc(e.name)}</td>
+              <td>${esc(e.booth_number)||'—'}</td>
+              <td>${esc(e.booth_size)||'—'}</td>
+              <td>${e.website
+                ? `<a href="${esc(e.website)}" target="_blank" class="website-link">${esc(e.website)}</a>`
+                : `<span style="color:#4a5568">—</span>`}
+              </td>
+              <td>${confidenceDot(e.website_confidence, e.website_source)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ── Comparison ────────────────────────────────────────────────────────────────
+function toggleSelect(id, ev) {
+  ev.stopPropagation();
+  if (selectedExIds.includes(id)) {
+    selectedExIds = selectedExIds.filter(x => x !== id);
+  } else if (selectedExIds.length < 2) {
+    selectedExIds.push(id);
+  } else {
+    showToast('You can only compare 2 extractions. Unselect one first.', 'error');
+    return;
+  }
+
+  // Update checkboxes
+  document.querySelectorAll('.ti-check').forEach(el => {
+    const xid = Number(el.id.replace('check-', ''));
+    el.classList.toggle('checked', selectedExIds.includes(xid));
+    el.textContent = selectedExIds.includes(xid) ? '✓' : '';
+  });
+
+  const bar = document.getElementById('compareBar');
+  bar.classList.toggle('hidden', selectedExIds.length === 0);
+  const label = document.getElementById('compareBarLabel');
+  const btn   = document.getElementById('compareBtn');
+  if (selectedExIds.length === 1) {
+    label.textContent = '1 extraction selected — select one more to compare';
+    btn.style.display = 'none';
+  } else if (selectedExIds.length === 2) {
+    label.textContent = '2 extractions selected';
+    btn.style.display = '';
+  } else {
+    label.textContent = 'Select 2 extractions to compare';
+    btn.style.display = 'none';
+  }
+}
+
+function clearCompare() {
+  selectedExIds = [];
+  document.querySelectorAll('.ti-check').forEach(el => {
+    el.classList.remove('checked');
+    el.textContent = '';
+  });
+  document.getElementById('compareBar').classList.add('hidden');
+  document.getElementById('detailSection').style.display = 'none';
+}
+
+async function runCompare() {
+  if (selectedExIds.length !== 2) return;
+  try {
+    const [a, b] = selectedExIds;
+    const data = await api(`/compare?a=${a}&b=${b}`);
+    lastCompareData = data;
+    renderCompareDelta(data);
+    document.getElementById('detailSection').style.display = '';
+    document.getElementById('detailSection').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    showToast('Compare failed: ' + e.message, 'error');
+  }
+}
+
+function renderCompareDelta(data) {
+  const d    = data.delta;
+  const sect = document.getElementById('detailSection');
+  const xA   = data.extractionA;
+  const xB   = data.extractionB;
+
+  activeTab = 'all';
+
+  sect.innerHTML = `
+    <div class="section-title">
+      Comparison: ${formatDateTime(xA.date)} vs ${formatDateTime(xB.date)}
+    </div>
+
+    <div class="delta-grid">
+      <div class="delta-card">
+        <div class="dc-num ${d.totalChange >= 0 ? 'dc-green' : 'dc-red'}">${d.totalChange >= 0 ? '+' : ''}${d.totalChange}</div>
+        <div class="dc-label">Net Change</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num dc-green">+${d.newCount}</div>
+        <div class="dc-label">New Exhibitors</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num dc-red">-${d.removedCount}</div>
+        <div class="dc-label">Removed</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num dc-amber">${d.updatedCount}</div>
+        <div class="dc-label">Updated</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num dc-blue">${d.unchangedCount}</div>
+        <div class="dc-label">Unchanged</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num dc-purple">${d.websiteGain >= 0 ? '+' : ''}${d.websiteGain}</div>
+        <div class="dc-label">Website Gain</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num">${d.completenessA}% → ${d.completenessB}%</div>
+        <div class="dc-label">Web Coverage</div>
+      </div>
+      <div class="delta-card">
+        <div class="dc-num">${xA.total} → ${xB.total}</div>
+        <div class="dc-label">Total Exhibitors</div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('all')"    id="tab-all">All (${d.newCount+d.removedCount+d.updatedCount+d.unchangedCount})</div>
+      <div class="tab"        onclick="switchTab('new')"    id="tab-new">🟢 New (${d.newCount})</div>
+      <div class="tab"        onclick="switchTab('removed')" id="tab-removed">🔴 Removed (${d.removedCount})</div>
+      <div class="tab"        onclick="switchTab('updated')" id="tab-updated">🟡 Updated (${d.updatedCount})</div>
+    </div>
+
+    <div id="compareTableWrap"></div>
+  `;
+
+  renderCompareTab('all', data);
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(`tab-${tab}`).classList.add('active');
+  renderCompareTab(tab, lastCompareData);
+}
+
+function renderCompareTab(tab, data) {
+  const wrap = document.getElementById('compareTableWrap');
+  let rows = '';
+
+  const mkRow = (ex, tag) => `
+    <tr>
+      <td>${esc(ex.name)}</td>
+      <td>${esc(ex.booth_number)||'—'}</td>
+      <td>${esc(ex.booth_size)||'—'}</td>
+      <td>${ex.website ? `<a href="${esc(ex.website)}" target="_blank" class="website-link">${esc(ex.website)}</a>` : '—'}</td>
+      <td><span class="tag-${tag}">${tag}</span></td>
+    </tr>`;
+
+  if (tab === 'all' || tab === 'new') {
+    data.newExhibitors.forEach(e => rows += mkRow(e, 'new'));
+  }
+  if (tab === 'all' || tab === 'removed') {
+    data.removedExhibitors.forEach(e => rows += mkRow(e, 'removed'));
+  }
+  if (tab === 'all' || tab === 'updated') {
+    data.updatedExhibitors.forEach(({ before, after, changes }) => {
+      const chgSummary = changes.map(c => `${c.field}: "${c.before||'—'}" → "${c.after||'—'}"`).join('; ');
+      rows += `<tr>
+        <td>${esc(after.name)}</td>
+        <td>${esc(after.booth_number)||'—'}</td>
+        <td>${esc(after.booth_size)||'—'}</td>
+        <td>${after.website ? `<a href="${esc(after.website)}" target="_blank" class="website-link">${esc(after.website)}</a>` : '—'}</td>
+        <td><span class="tag-updated">updated</span><br/><small style="color:#a0aec0;font-size:10px">${esc(chgSummary)}</small></td>
+      </tr>`;
+    });
+  }
+  if (tab === 'all') {
+    data.unchanged.slice(0, 100).forEach(e => rows += mkRow(e, 'new').replace('tag-new', '').replace('new', '<span style="color:#4a5568;font-size:10px">same</span>'));
+  }
+
+  if (!rows) rows = `<tr><td colspan="5" style="text-align:center;color:#4a5568;padding:24px">No entries in this category</td></tr>`;
+
+  wrap.innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Booth</th><th>Size</th><th>Website</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ── Enrichment Panel ──────────────────────────────────────────────────────────
+function openEnrichPanel(extractionId, ev) {
+  ev.stopPropagation();
+  const sect = document.getElementById('detailSection');
+  sect.style.display = '';
+  sect.innerHTML = `
+    <div class="section-title">Website Enrichment</div>
+    <div class="enrich-panel">
+      <h4>🔍 Enrich Missing Websites</h4>
+      <p style="font-size:12px;color:#718096;margin-bottom:12px;">
+        This will search Clearbit, Google, and Hunter.io to find websites for exhibitors that have none.
+        Requires API keys in your <code style="background:#2d3748;padding:1px 5px;border-radius:3px">.env</code> file for Google/Hunter features.
+      </p>
+      <button class="btn btn-success" id="startEnrichBtn" onclick="startEnrichment(${extractionId})">▶ Start Enrichment</button>
+      <div class="enrich-progress" style="display:none" id="enrichProgressBar">
+        <div class="enrich-progress-fill" id="enrichProgressFill" style="width:0%"></div>
+      </div>
+      <div class="enrich-status" id="enrichStatus"></div>
+    </div>
+  `;
+  sect.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function startEnrichment(extractionId) {
+  document.getElementById('startEnrichBtn').disabled = true;
+  document.getElementById('startEnrichBtn').textContent = '⏳ Running…';
+  document.getElementById('enrichProgressBar').style.display = '';
+
+  try {
+    const res = await fetch(`/api/history/enrich/${extractionId}`, { method: 'POST' });
+    if (!res.body) throw new Error('Streaming not supported');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value);
+      const lines = text.split('\n').filter(l => l.startsWith('data:'));
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line.slice(5));
+          if (msg.done) {
+            document.getElementById('enrichStatus').innerHTML =
+              `✅ Done: ${msg.enriched} enriched, ${msg.skipped} skipped, ${msg.failed} failed`;
+            document.getElementById('enrichProgressFill').style.width = '100%';
+          } else {
+            const pct2 = Math.round((msg.done2 / msg.total) * 100);
+            document.getElementById('enrichProgressFill').style.width = `${pct2}%`;
+            document.getElementById('enrichStatus').textContent = `(${msg.done2}/${msg.total}) ${msg.name}`;
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    showToast('Enrichment error: ' + e.message, 'error');
+    document.getElementById('enrichStatus').textContent = 'Error: ' + e.message;
+  }
+  document.getElementById('startEnrichBtn').disabled = false;
+  document.getElementById('startEnrichBtn').textContent = '▶ Start Again';
+}
+
+// ── Delete actions ────────────────────────────────────────────────────────────
+async function deleteEvent(id) {
+  if (!confirm('Delete this event and ALL its extractions? This cannot be undone.')) return;
+  try {
+    await api(`/events/${id}`, { method: 'DELETE' });
+    activeEventId = null;
+    document.getElementById('mainContent').innerHTML = `<div class="welcome"><div style="font-size:48px">🗑️</div><h2>Event deleted</h2><p>Select another event or run a new extraction.</p></div>`;
+    showToast('Event deleted');
+    loadEvents();
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function deleteExtraction(id, eventId, ev) {
+  ev.stopPropagation();
+  if (!confirm('Delete this extraction? This cannot be undone.')) return;
+  try {
+    await api(`/extractions/${id}`, { method: 'DELETE' });
+    showToast('Extraction deleted');
+    selectEvent(eventId);
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+// ── CSV export ────────────────────────────────────────────────────────────────
+async function exportCsv(extractionId) {
+  try {
+    const data = await api(`/extractions/${extractionId}`);
+    const ex   = data.exhibitors;
+    const header = 'Name,Booth Number,Booth Size,Website,Website Confidence,Source\n';
+    const rows   = ex.map(e =>
+      [e.name, e.booth_number, e.booth_size, e.website, e.website_confidence, e.website_source]
+        .map(v => `"${String(v||'').replace(/"/g,'""')}"`)
+        .join(',')
+    ).join('\n');
+    const blob = new Blob([header + rows], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `extraction_${extractionId}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    showToast('Export failed: ' + e.message, 'error');
+  }
+}
+
+// ── Rename modal ──────────────────────────────────────────────────────────────
+function openRenameModal(id, currentName) {
+  renameTargetId = id;
+  document.getElementById('renameInput').value = currentName;
+  document.getElementById('renameModal').classList.remove('hidden');
+  document.getElementById('renameInput').focus();
+}
+function closeRenameModal() {
+  document.getElementById('renameModal').classList.add('hidden');
+}
+async function confirmRename() {
+  const name = document.getElementById('renameInput').value.trim();
+  if (!name) return;
+  try {
+    await api(`/events/${renameTargetId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ event_name: name }),
+    });
+    showToast('Event renamed');
+    closeRenameModal();
+    loadEvents();
+    selectEvent(renameTargetId);
+  } catch (e) {
+    showToast('Rename failed: ' + e.message, 'error');
+  }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function pct(a, b) {
+  if (!b) return 0;
+  return Math.round((a / b) * 100);
+}
+
+function growthStr(current, previous) {
+  if (!previous) return '—';
+  const diff = current - previous;
+  const sign = diff >= 0 ? '+' : '';
+  return `${sign}${diff}`;
+}
+
+function platformBadgeText(p) {
+  const map = { a2z: 'a2zinc', mys: 'MapYourShow', goexpo: 'GoExpo', expofp: 'ExpoFP', expocad: 'ExpoCad', eventscribe: 'EventScribe', bizzabo: 'Bizzabo', ungerboeck: 'Ungerboeck', generic: 'Generic' };
+  return map[p] || p || 'Unknown';
+}
+
+function formatDateTime(dt) {
+  if (!dt) return '—';
+  return new Date(dt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function timeAgo(dt) {
+  const diff = Date.now() - new Date(dt).getTime();
+  const m    = Math.round(diff / 60000);
+  if (m < 60)    return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24)    return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
+
+function confidenceDot(confidence, source) {
+  if (!confidence) return '<span style="color:#4a5568">—</span>';
+  const cls = confidence >= 0.75 ? 'conf-high' : confidence >= 0.5 ? 'conf-med' : 'conf-low';
+  const pct2 = Math.round(confidence * 100);
+  return `<span class="confidence-dot ${cls}"></span><span style="font-size:11px;color:#a0aec0">${pct2}% (${source||'?'})</span>`;
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeRenameModal();
+  if (e.key === 'Enter' && !document.getElementById('renameModal').classList.contains('hidden')) confirmRename();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadEvents();
+</script>
+</body>
+</html>
