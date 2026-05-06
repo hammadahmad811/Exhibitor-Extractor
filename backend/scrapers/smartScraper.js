@@ -1391,6 +1391,11 @@ async function scrapeExpoCad(context, url, onProgress) {
         window.expocadfx.fxData.displayExhibitors.length > 0;
     }, { timeout: 45_000 }).catch(() => null);
 
+    // Stabilisation wait — ExpoCad loads multiple XML files (exhibitor_shows.xml,
+    // boothlist_shows.xml) after the first batch.  Give the page 3 s to settle so
+    // displayExhibitors reaches its final, deduplicated count before we read it.
+    await sleep(3000);
+
     onProgress('Extracting exhibitor records...', 55);
     const exhibitors = await page.evaluate(() => {
       const fx = window.expocadfx;
@@ -1476,10 +1481,13 @@ async function scrapeExpoCad(context, url, onProgress) {
 // XML fallback: parse ex_{event}.xml directly and decode XOR-encoded names
 // Used when the JS hasn't populated window.expocadfx in time
 async function scrapeExpoCadXml(page, url, onProgress) {
-  // Derive the event name from the URL path, e.g. .../26bhusa/exfx.html → "26bhusa"
+  // Derive the event name: prefer ?event= query param over the URL folder name.
+  // e.g. exfx.html?event=allhallsfloorplan → "allhallsfloorplan"
+  //      .../sema26/exfx.html               → "sema26"
   const eventMatch = url.match(/\/host\/fx\/[^/]+\/([^/]+)\/exfx\.html/i);
   if (!eventMatch) return [];
-  const eventName = eventMatch[1];
+  const urlObj    = new URL(url);
+  const eventName = urlObj.searchParams.get('event') || eventMatch[1];
   const baseUrl   = url.replace(/\/exfx\.html.*$/i, '');
   const exXmlUrl  = `${baseUrl}/ex_${eventName}.xml`;
   const fpXmlUrl  = `${baseUrl}/${eventName}.xml`;   // floor plan XML — has booth size <B> nodes
