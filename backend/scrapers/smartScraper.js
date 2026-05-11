@@ -30,22 +30,10 @@ export async function runScraper(url, urlType, onProgress) {
   onProgress('Launching browser...', 5);
   let browser;
   try {
-    // In production (Docker/Railway), use the system Chromium pointed to by
-    // CHROMIUM_PATH env var.  In local dev, Playwright uses its own bundled browser.
-    const launchOptions = {
+    browser = await chromium.launch({
       headless: true,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-sandbox',              // required in Docker / CI environments
-        '--disable-setuid-sandbox',  // required when running as root
-        '--disable-dev-shm-usage',   // Docker /dev/shm is only 64 MB by default
-        '--disable-gpu',             // not needed for headless
-      ],
-    };
-    if (process.env.CHROMIUM_PATH) {
-      launchOptions.executablePath = process.env.CHROMIUM_PATH;
-    }
-    browser = await chromium.launch(launchOptions);
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       viewport: { width: 1440, height: 900 },
@@ -170,10 +158,14 @@ async function scrapeMYS(context, url, onProgress) {
     }
 
     // Retry-aware GET: retries up to maxRetries times on 503, returns null on failure.
+    // X-Requested-With is required — ColdFusion returns HTML instead of JSON without it.
     async function mysGet(reqUrl, timeout = 25000, maxRetries = 3) {
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-          const r = await context.request.get(reqUrl, { timeout });
+          const r = await context.request.get(reqUrl, {
+            timeout,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          });
           if (r.ok()) return r;
           if (r.status() === 503 && attempt < maxRetries - 1) {
             await sleep(1500 * (attempt + 1)); // 1.5s, 3s back-off
@@ -207,16 +199,20 @@ async function scrapeMYS(context, url, onProgress) {
           const data = unwrapMYS(await resp.json().catch(() => null));
           if (!data) continue;
           const cols = data.COLUMNS;
-          const boothIdx = cols.indexOf('BOOTH'), exhNameIdx = cols.indexOf('EXHNAME');
-          const exhIdIdx = cols.indexOf('EXHID'), dimsIdx = cols.indexOf('BOOTHDIMS');
+          const boothIdx   = cols.indexOf('BOOTH');
+          const exhNameIdx = cols.indexOf('EXHNAME');   // may be -1 on newer MYS shows (e.g. NACS26)
+          const exhIdIdx   = cols.indexOf('EXHID');
+          const dimsIdx    = cols.indexOf('BOOTHDIMS') >= 0 ? cols.indexOf('BOOTHDIMS') : cols.indexOf('DIMS');
           let found = 0;
           for (const row of data.DATA) {
-            const name = (row[exhNameIdx] || '').toString().trim();
-            if (!name) continue;
             const exhId = (row[exhIdIdx] || '').toString().trim();
+            const name  = exhNameIdx >= 0 ? (row[exhNameIdx] || '').toString().trim() : '';
+            // Require at least exhId OR name — NACS26 omits EXHNAME so we key on exhId
+            if (!exhId && !name) continue;
             const key = exhId || name;
             if (!boothMap.has(key)) {
-              boothMap.set(key, { name, booth: (row[boothIdx] || '').toString().trim(), exhId, dims: (row[dimsIdx] || '').toString().trim() });
+              boothMap.set(key, { name, booth: (row[boothIdx] || '').toString().trim(), exhId,
+                dims: dimsIdx >= 0 ? (row[dimsIdx] || '').toString().trim() : '' });
             }
             found++;
           }
@@ -233,40 +229,62 @@ async function scrapeMYS(context, url, onProgress) {
     const kwMap = new Map(); // key → { name, exhId, booth, dims, website }
     let kwPage = 1, kwTotalPages = 1;
 
-    while (kwPage <= kwTotalPages && kwPage <= 60) { // 60 × 200 = 12,000 cap
+    let kwExpectedTotal = 0;
+    while (kwPage <= kwTotalPages && kwPage <= 60) { // 60 × 1000 = 60,000 cap
       try {
         const kwUrl = config.origin + '/8_0/floorplan/remote-proxy.cfm?' +
-          new URLSearchParams({ action: 'getExhibitorsByKeyword', searchsize: '200',
+          new URLSearchParams({
+            action: 'getExhibitorsByKeyword',
+            showid: config.showID,   // required on newer MYS instances for pagination
+            searchsize: '1000',      // larger page → fewer round-trips
             sort: 'name', alpha: '', categories: '', country: '', pavilion: '',
-            page: String(kwPage) });
-        const resp = await mysGet(kwUrl, 30000);
+            page: String(kwPage),
+          });
+        const resp = await mysGet(kwUrl, 40000);
         if (!resp) break;
+        // NOTE: ColdFusion .cfm returns JSON with Content-Type: text/html — never check ct here
         const d = await resp.json().catch(() => null);
         if (!d) break;
 
+        // Detect Format A (older) vs Format B (newer — NACS26+)
+        //   Format A: { totalPages, totalExhibitors, exhibitors: [...] }
+        //   Format B: { success, data: { exhibitor: { found, hit: [...] } } }
+        const exhNode = d.data && d.data.exhibitor;
+        const list = d.exhibitors || d.results || (exhNode && exhNode.hit) || [];
+
         if (kwPage === 1) {
-          kwTotalPages = Number(d.totalPages) || 1;
-          const tot = Number(d.totalExhibitors) || 0;
-          console.log(`  [MYS] getExhibitorsByKeyword: ${tot} total exhibitors, ${kwTotalPages} pages`);
+          const tot = Number(d.totalExhibitors) || (exhNode ? Number(exhNode.found) : 0) || 0;
+          kwExpectedTotal = tot;
+          if (d.totalPages) {
+            // Format A: server tells us explicitly
+            kwTotalPages = Number(d.totalPages);
+          } else if (tot > 0 && list.length > 0 && list.length < tot) {
+            // Format B: calculate pages from total ÷ this page's count
+            kwTotalPages = Math.ceil(tot / list.length);
+          }
+          // If list.length >= tot the server returned everything in one shot → stays at 1
+          console.log(`  [MYS] keyword: ${tot} total, ${kwTotalPages} pages, ${list.length} on pg1`);
           onProgress(`Found ${tot} exhibitors — fetching all pages...`, 28);
         }
 
-        const list = d.exhibitors || d.results || [];
         if (list.length === 0) break;
 
         for (const e of list) {
-          // Handle multiple field name variants across MYS versions
-          const name = (e.name || e.exhibitorName || e.exhName || '').trim();
+          // Field name variants across MYS API versions
+          // Format A: name/exhibitorName/exhName   Format B: exhname
+          const name = (e.name || e.exhibitorName || e.exhName || e.exhname || '').trim();
           if (!name) continue;
-          const exhId   = String(e.exhibitorId || e.exhid || e.id || '').trim();
-          const booth   = (e.booth || e.boothNumber || e.boothNum || '').toString().trim();
-          const dims    = (e.boothsize || e.boothDims || e.boothdims || '').toString().trim();
-          const website = (e.websiteURL || e.website || e.url || '').trim();
-          const key = exhId || name;
+          const exhId = String(e.exhibitorId || e.exhid || e.id || '').trim();
+          // Format B masks booth numbers ("C5654randomstring") — strip them; real ones from GetBoothByHall
+          const boothRaw = (e.booth || e.boothNumber || e.boothNum || '').toString().trim();
+          const booth    = /randomstring/i.test(boothRaw) ? '' : boothRaw;
+          const dims     = (e.boothsize || e.boothDims || e.boothdims || '').toString().trim();
+          const website  = (e.websiteURL || e.website || e.url || '').trim();
+          const key      = exhId || name;
           if (!kwMap.has(key)) kwMap.set(key, { name, exhId, booth, dims, website });
         }
         kwPage++;
-        if (kwPage <= kwTotalPages) await sleep(300);
+        if (kwPage <= kwTotalPages) await sleep(400);
       } catch (e) {
         console.log(`  [MYS] getExhibitorsByKeyword page ${kwPage} error: ${e.message}`);
         break;
@@ -320,50 +338,107 @@ async function scrapeMYS(context, url, onProgress) {
       console.log(`  [MYS] Alpha: ${alphaMap.size} exhibitors from ${alphaPage} page(s)`);
     }
 
-    // ── Step 4b: page.evaluate fallback — if context.request failed entirely ──
-    // The old show=all approach (~200 cap) is kept as a last resort so the scraper
-    // never returns 0 from a transient server problem.
+    // ── Step 4b: page.evaluate rescue ─────────────────────────────────────────
+    // Runs when context.request couldn't collect enough exhibitors.
+    // page.evaluate runs inside the real browser tab with ALL cookies + JS session
+    // tokens, so it succeeds even when context.request lacks those credentials.
+    // Three strategies in priority order:
+    //   A) getExhibitorsByKeyword searchsize=5000 (one-shot, richest)
+    //   B) paginated Solr alpha search rows/start (no cap)
+    //   C) show=all last resort (~200, but better than 0)
     let evaluateFallbackItems = [];
-    if (kwMap.size === 0 && alphaMap.size === 0) {
-      console.log('  [MYS] Both API paths empty — trying page.evaluate alpha fallback');
-      onProgress('Fetching exhibitors via browser search...', 40);
-      const alphaRaw = await page.evaluate(async (cfg) => {
-        return new Promise((resolve) => {
-          const searchUrl = `${cfg.origin}/8_0/ajax/remote-proxy.cfm?action=search&search=*` +
-            `&searchtype=exhibitoralpha&sortfield=title_t&sortdirection=asc&show=all`;
-          const xhr = new XMLHttpRequest();
-          xhr.open('GET', searchUrl, true);
-          xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-          xhr.timeout = 90000;
-          xhr.ontimeout = () => resolve([]);
-          xhr.onload = () => {
-            try {
-              const d = JSON.parse(xhr.responseText);
-              const exhData = d.DATA && d.DATA.results && d.DATA.results.exhibitor;
-              const hits = (exhData && exhData.hit) || [];
-              resolve(hits.map(hit => {
-                const f = hit.fields || {};
-                const boothRaw = (f.boothsdisplay_la || [])[0] || '';
-                const m = boothRaw.match(/^([A-Z]*\d+)/);
-                return { name: (f.exhname_t || '').trim(), exhId: String(f.exhid_l || ''), boothNumber: m ? m[1] : '' };
-              }).filter(x => x.name));
-            } catch { resolve([]); }
-          };
-          xhr.onerror = () => resolve([]);
-          xhr.send();
-        });
+    const kwShortfall = kwExpectedTotal > 0 && kwMap.size < kwExpectedTotal * 0.9;
+    if (kwMap.size === 0 || (alphaMap.size === 0 && kwShortfall)) {
+      console.log(`  [MYS] Rescue needed (kw=${kwMap.size}, alpha=${alphaMap.size}, expected=${kwExpectedTotal})`);
+      onProgress('Fetching exhibitors via browser session...', 40);
+      const rescueItems = await page.evaluate(async (cfg) => {
+        function xhrJson(url, hdrs) {
+          return new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url, true);
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            if (hdrs) Object.keys(hdrs).forEach(k => xhr.setRequestHeader(k, hdrs[k]));
+            xhr.timeout = 90000;
+            xhr.ontimeout = () => resolve(null);
+            xhr.onerror  = () => resolve(null);
+            xhr.onload   = () => { try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(null); } };
+            xhr.send();
+          });
+        }
+
+        // ── Strategy A: keyword search, large page ─────────────────────────────
+        const kwUrl = `${cfg.origin}/8_0/floorplan/remote-proxy.cfm?` +
+          `action=getExhibitorsByKeyword&showid=${cfg.showID}&searchsize=5000&sort=name&alpha=&categories=&country=&pavilion=&page=1`;
+        const kwData = await xhrJson(kwUrl);
+        const exhNode = kwData && kwData.data && kwData.data.exhibitor;
+        const kwHits  = (kwData && (kwData.exhibitors || kwData.results)) || (exhNode && exhNode.hit) || [];
+        if (kwHits.length > 0) {
+          return kwHits.map(e => ({
+            name:  (e.name || e.exhibitorName || e.exhName || e.exhname || '').trim(),
+            exhId: String(e.exhibitorId || e.exhid || e.id || ''),
+            boothNumber: '',  // masked in keyword response; GetBoothByHall has real ones
+          })).filter(x => x.name);
+        }
+
+        // ── Strategy B: paginated Solr alpha search ────────────────────────────
+        const solrItems = [];
+        let start = 0, total = Infinity;
+        while (start < total && start < 5000) {
+          const d = await xhrJson(
+            `${cfg.origin}/8_0/ajax/remote-proxy.cfm?action=search&search=*` +
+            `&searchtype=exhibitoralpha&sortfield=title_t&sortdirection=asc&rows=200&start=${start}`
+          );
+          const exhData = d && d.DATA && d.DATA.results && d.DATA.results.exhibitor;
+          if (!exhData) break;
+          if (total === Infinity) total = Number(exhData.found) || 0;
+          const hits = exhData.hit || [];
+          if (!hits.length) break;
+          for (const hit of hits) {
+            const f = hit.fields || {};
+            const name = (f.exhname_t || '').trim();
+            if (!name) continue;
+            const boothRaw = (f.boothsdisplay_la || [])[0] || '';
+            const m = boothRaw.match(/^([A-Z]*\d+)/);
+            solrItems.push({ name, exhId: String(f.exhid_l || ''), boothNumber: m ? m[1] : '' });
+          }
+          start += hits.length;
+          if (hits.length < 200) break;
+          await new Promise(r => setTimeout(r, 300));
+        }
+        if (solrItems.length > 0) return solrItems;
+
+        // ── Strategy C: show=all last resort (~200 cap) ────────────────────────
+        const d = await xhrJson(
+          `${cfg.origin}/8_0/ajax/remote-proxy.cfm?action=search&search=*` +
+          `&searchtype=exhibitoralpha&sortfield=title_t&sortdirection=asc&show=all`
+        );
+        const exhData = d && d.DATA && d.DATA.results && d.DATA.results.exhibitor;
+        const hits = (exhData && exhData.hit) || [];
+        return hits.map(hit => {
+          const f = hit.fields || {};
+          const boothRaw = (f.boothsdisplay_la || [])[0] || '';
+          const m = boothRaw.match(/^([A-Z]*\d+)/);
+          return { name: (f.exhname_t || '').trim(), exhId: String(f.exhid_l || ''), boothNumber: m ? m[1] : '' };
+        }).filter(x => x.name);
+
       }, config).catch(() => []);
-      evaluateFallbackItems = alphaRaw || [];
-      console.log(`  [MYS] page.evaluate fallback: ${evaluateFallbackItems.length} exhibitors`);
+
+      evaluateFallbackItems = rescueItems || [];
+      console.log(`  [MYS] page.evaluate rescue: ${evaluateFallbackItems.length} exhibitors`);
     }
 
     // ── Step 5: merge all sources ─────────────────────────────────────────────
-    // Priority: kwMap (most complete) → alphaMap / evaluateFallback → boothMap (dims)
+    // Priority (highest wins): kwMap → alphaMap → evaluateFallbackItems → boothMap overlay
+    // All sources are merged additively — none is silently discarded.
     const merged = new Map();
-    const primarySource = kwMap.size > 0 ? kwMap : alphaMap;
 
-    for (const [key, a] of primarySource) {
-      merged.set(key, { name: a.name, exhId: a.exhId, booth: a.booth || a.boothNumber || '', dims: a.dims || '', website: a.website || '' });
+    for (const [key, a] of kwMap) {
+      merged.set(key, { name: a.name, exhId: a.exhId, booth: a.booth || '', dims: a.dims || '', website: a.website || '' });
+    }
+    for (const [key, a] of alphaMap) {
+      if (!merged.has(key)) {
+        merged.set(key, { name: a.name, exhId: a.exhId, booth: a.boothNumber || a.booth || '', dims: '', website: '' });
+      }
     }
     for (const fb of evaluateFallbackItems) {
       const key = fb.exhId || fb.name;
@@ -385,46 +460,115 @@ async function scrapeMYS(context, url, onProgress) {
     onProgress(`Merged ${allExhibitors.length} exhibitors — enriching with website info...`, 55);
 
     // ── Step 6: getExhibitorInfo enrichment for website URLs ──────────────────
-    // Skip if keyword search already returned website data for most exhibitors
+    // Confirmed working endpoint for NACS26: /8_0/floorplan/remote-proxy.cfm
+    // Returns array [{url, exhname, exhid, ...}] — field name is "url".
+    // Strategy A: context.request.get() with X-Requested-With header (now in mysGet)
+    // Strategy B: page.evaluate XHR fallback — runs in browser, always has full session
     const needsEnrich = allExhibitors.filter(e => !e.website && e.exhId).length;
     if (needsEnrich > 0) {
       let infoProxy = null, infoUrlField = null;
       const probeExh = allExhibitors.find(e => e.exhId);
+      const infoProxyCandidates = [
+        config.origin + '/8_0/floorplan/remote-proxy.cfm', // confirmed working for NACS26
+        config.origin + '/8_0/ajax/remote-proxy.cfm',
+        config.origin + '/8_0/exhview/remote-proxy.cfm',
+        ...proxyCandidates,
+      ];
+
+      // ── Strategy A: server-side request via mysGet ────────────────────────────
       if (probeExh) {
-        for (const proxyUrl of proxyCandidates) {
+        for (const proxyUrl of infoProxyCandidates) {
           try {
-            const qs = `action=getExhibitorInfo&exhID=${probeExh.exhId}&showCustID=&_=${Date.now()}`;
+            const qs = `action=getExhibitorInfo&exhID=${probeExh.exhId}&showCustID=&showid=${config.showID}&_=${Date.now()}`;
             const resp = await mysGet(proxyUrl + '?' + qs, 12000, 2);
             if (!resp) continue;
             const data = await resp.json().catch(() => null);
-            if (!Array.isArray(data) || !data.length) continue;
+            if (!data) continue;
+            const rec = Array.isArray(data) ? data[0] : (data.exhibitor || data.data || data);
+            if (!rec) continue;
+            const urlVal = rec.url || rec.website || rec.websiteURL || '';
+            if (!urlVal && Object.keys(rec).length < 2) continue;
             infoProxy = proxyUrl;
-            infoUrlField = data[0].url !== undefined ? 'url' : data[0].website !== undefined ? 'website' : null;
+            infoUrlField = rec.url !== undefined ? 'url' : rec.website !== undefined ? 'website' : 'websiteURL';
+            console.log(`  [MYS] getExhibitorInfo proxy (A): ${proxyUrl} field=${infoUrlField}`);
             break;
           } catch (_) {}
         }
       }
 
       if (infoProxy) {
+        // Batch via context.request
         const withId = allExhibitors.filter(e => !e.website && e.exhId);
         const BATCH = 15;
         for (let i = 0; i < withId.length; i += BATCH) {
           const pct = 55 + Math.round((i / withId.length) * 38);
-          onProgress(`Enriching ${i + 1}–${Math.min(i + BATCH, withId.length)} of ${withId.length}...`, pct);
+          onProgress(`Enriching websites ${i + 1}–${Math.min(i + BATCH, withId.length)} of ${withId.length}...`, pct);
           await Promise.allSettled(withId.slice(i, i + BATCH).map(async (exh) => {
             try {
-              const qs = `action=getExhibitorInfo&exhID=${exh.exhId}&showCustID=&_=${Date.now()}`;
+              const qs = `action=getExhibitorInfo&exhID=${exh.exhId}&showCustID=&showid=${config.showID}&_=${Date.now()}`;
               const resp = await mysGet(infoProxy + '?' + qs, 15000, 1);
               if (!resp) return;
               const info = await resp.json().catch(() => null);
-              if (Array.isArray(info) && info.length > 0) {
-                const d = info[0];
-                exh.website = ((infoUrlField && d[infoUrlField]) || d.url || d.website || '').trim();
-              }
+              if (!info) return;
+              const rec = Array.isArray(info) ? info[0] : (info.exhibitor || info.data || info);
+              if (rec) exh.website = ((infoUrlField && rec[infoUrlField]) || rec.url || rec.website || rec.websiteURL || '').trim();
             } catch (_) {}
           }));
           if (i + BATCH < withId.length) await sleep(200);
         }
+      } else {
+        // ── Strategy B: page.evaluate XHR fallback ────────────────────────────
+        // Runs inside the real browser tab — guaranteed session cookies + JS tokens.
+        // Sends all exhIds in one evaluate call (XHR per exhId, 20 concurrent).
+        console.log('  [MYS] getExhibitorInfo: mysGet probe failed — using page.evaluate XHR');
+        onProgress('Fetching website URLs via browser session...', 58);
+        const withId = allExhibitors.filter(e => !e.website && e.exhId);
+        const exhIds = withId.map(e => e.exhId);
+        const EVAL_BATCH = 100; // number of IDs sent per evaluate call
+        for (let b = 0; b < exhIds.length; b += EVAL_BATCH) {
+          const batchIds = exhIds.slice(b, b + EVAL_BATCH);
+          const pct = 58 + Math.round((b / exhIds.length) * 35);
+          onProgress(`Fetching websites ${b + 1}–${Math.min(b + EVAL_BATCH, exhIds.length)} of ${exhIds.length}...`, pct);
+          const batchResults = await page.evaluate(async ({ ids, cfg }) => {
+            function xhrGet(url) {
+              return new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.timeout = 15000;
+                xhr.ontimeout = () => resolve(null);
+                xhr.onerror  = () => resolve(null);
+                xhr.onload   = () => {
+                  try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(null); }
+                };
+                xhr.send();
+              });
+            }
+            // Run 20 concurrent XHR requests
+            const CONC = 20;
+            const out = {};
+            for (let i = 0; i < ids.length; i += CONC) {
+              const chunk = ids.slice(i, i + CONC);
+              await Promise.all(chunk.map(async (exhId) => {
+                const url = `${cfg.origin}/8_0/floorplan/remote-proxy.cfm?action=getExhibitorInfo&exhID=${exhId}&showCustID=&showid=${cfg.showID}&_=${Date.now()}`;
+                const data = await xhrGet(url);
+                const rec = Array.isArray(data) ? data[0] : (data && (data.exhibitor || data.data || data));
+                if (rec) {
+                  const site = (rec.url || rec.website || rec.websiteURL || '').trim();
+                  if (site) out[exhId] = site;
+                }
+              }));
+              await new Promise(r => setTimeout(r, 50)); // small gap between chunks
+            }
+            return out;
+          }, { ids: batchIds, cfg: config }).catch(() => ({}));
+          // Write results back to allExhibitors
+          for (const exh of withId) {
+            if (batchResults[exh.exhId]) exh.website = batchResults[exh.exhId];
+          }
+        }
+        const enriched = allExhibitors.filter(e => e.website).length;
+        console.log(`  [MYS] getExhibitorInfo (page.evaluate): ${enriched} websites found`);
       }
     }
 
@@ -1391,11 +1535,6 @@ async function scrapeExpoCad(context, url, onProgress) {
         window.expocadfx.fxData.displayExhibitors.length > 0;
     }, { timeout: 45_000 }).catch(() => null);
 
-    // Stabilisation wait — ExpoCad loads multiple XML files (exhibitor_shows.xml,
-    // boothlist_shows.xml) after the first batch.  Give the page 3 s to settle so
-    // displayExhibitors reaches its final, deduplicated count before we read it.
-    await sleep(3000);
-
     onProgress('Extracting exhibitor records...', 55);
     const exhibitors = await page.evaluate(() => {
       const fx = window.expocadfx;
@@ -1481,13 +1620,10 @@ async function scrapeExpoCad(context, url, onProgress) {
 // XML fallback: parse ex_{event}.xml directly and decode XOR-encoded names
 // Used when the JS hasn't populated window.expocadfx in time
 async function scrapeExpoCadXml(page, url, onProgress) {
-  // Derive the event name: prefer ?event= query param over the URL folder name.
-  // e.g. exfx.html?event=allhallsfloorplan → "allhallsfloorplan"
-  //      .../sema26/exfx.html               → "sema26"
+  // Derive the event name from the URL path, e.g. .../26bhusa/exfx.html → "26bhusa"
   const eventMatch = url.match(/\/host\/fx\/[^/]+\/([^/]+)\/exfx\.html/i);
   if (!eventMatch) return [];
-  const urlObj    = new URL(url);
-  const eventName = urlObj.searchParams.get('event') || eventMatch[1];
+  const eventName = eventMatch[1];
   const baseUrl   = url.replace(/\/exfx\.html.*$/i, '');
   const exXmlUrl  = `${baseUrl}/ex_${eventName}.xml`;
   const fpXmlUrl  = `${baseUrl}/${eventName}.xml`;   // floor plan XML — has booth size <B> nodes
