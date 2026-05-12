@@ -31,8 +31,18 @@ export async function runScraper(url, urlType, onProgress) {
   let browser;
   try {
     // Playwright uses its own bundled Chromium in both local and production (Railway/Docker).
-    // CHROMIUM_PATH env var is optional — only set it to override with a system binary.
-    const executablePath = process.env.CHROMIUM_PATH || undefined;
+    // CHROMIUM_PATH is optional — only use it if the file actually exists on disk,
+    // so a stale Railway env var can't break the launch.
+    let executablePath;
+    if (process.env.CHROMIUM_PATH) {
+      const { existsSync } = await import('fs');
+      executablePath = existsSync(process.env.CHROMIUM_PATH)
+        ? process.env.CHROMIUM_PATH
+        : undefined;
+      if (!executablePath) {
+        console.warn(`[Browser] CHROMIUM_PATH="${process.env.CHROMIUM_PATH}" not found — using Playwright's bundled Chromium`);
+      }
+    }
     browser = await chromium.launch({
       headless: true,
       executablePath,

@@ -7,11 +7,11 @@
 
 FROM node:24-bookworm-slim
 
-# ── System dependencies required by Playwright's Chromium ─────────────────────
+# ── Minimal system packages needed before npx can run ────────────────────────
+# npx playwright install --with-deps (step 3) installs all browser dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       wget \
-      # Playwright --with-deps will add the rest, but these are needed for npx to run
     && rm -rf /var/lib/apt/lists/*
 
 ENV PORT=3001
