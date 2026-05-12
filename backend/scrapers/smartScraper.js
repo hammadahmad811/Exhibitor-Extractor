@@ -2008,7 +2008,43 @@ async function scrapeA2Z(context, url, onProgress) {
     }
 
     // ── Step 4: batch-fetch eBooth pages for website URLs ────────────────────
-    if (pubBase && eventId) {
+    // Pre-check: some a2zinc deployments (e.g. ExpoWest/Informa) load eBooth
+    // data entirely via AJAX (ExpoDataBridge.ashx), so the static eBooth HTML
+    // has no website URL at all. Fetching thousands of empty pages wastes
+    // several minutes and causes the SSE connection to appear stalled.
+    // Probe the first 5 pages; if none yield a website, skip the bulk fetch.
+    let skipEboothFetch = false;
+    if (pubBase && eventId && domResults.length > 0) {
+      const probeSet = domResults.filter(ex => ex.boothId).slice(0, 5);
+      onProgress(`Probing ${probeSet.length} eBooth pages for website URLs...`, 47);
+      const probeSettled = await Promise.allSettled(
+        probeSet.map(exh =>
+          context.request.get(
+            `${pubBase}eBooth.aspx?BoothID=${exh.boothId}&EventID=${eventId}`,
+            { timeout: 12_000 }
+          )
+            .then(r => r.ok() ? r.text() : '')
+            .then(html => extractA2ZWebsite(html))
+            .catch(() => '')
+        )
+      );
+      const probeHits = probeSettled.filter(r => r.status === 'fulfilled' && r.value).length;
+      if (probeHits === 0 && probeSet.length >= 3) {
+        skipEboothFetch = true;
+        console.log(`  [a2z] Probe: 0/${probeSet.length} eBooth pages had website URLs — skipping bulk eBooth fetch (AJAX-rendered show)`);
+      } else {
+        console.log(`  [a2z] Probe: ${probeHits}/${probeSet.length} eBooth pages had website URLs — proceeding with full fetch`);
+        // Apply probe results so we don't re-fetch those 5
+        probeSettled.forEach((r, idx) => {
+          if (r.status === 'fulfilled' && r.value) {
+            const match = domResults.find(ex => ex.boothId === probeSet[idx]?.boothId);
+            if (match) match.website = r.value;
+          }
+        });
+      }
+    }
+
+    if (pubBase && eventId && !skipEboothFetch) {
       const BATCH = 10;
       const total = domResults.length;
       onProgress(`Fetching website URLs for ${total} exhibitors...`, 50);

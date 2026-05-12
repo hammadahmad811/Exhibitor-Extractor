@@ -52,6 +52,7 @@ router.get('/extract/stream/:jobId', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx/Railway proxy buffering
   res.flushHeaders();
 
   const send = (payload) => {
