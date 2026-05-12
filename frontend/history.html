@@ -656,43 +656,78 @@ function openEnrichPanel(extractionId, ev) {
 }
 
 async function startEnrichment(extractionId) {
-  document.getElementById('startEnrichBtn').disabled = true;
-  document.getElementById('startEnrichBtn').textContent = '⏳ Running…';
-  document.getElementById('enrichProgressBar').style.display = '';
+  const btn        = document.getElementById('startEnrichBtn');
+  const progressBar = document.getElementById('enrichProgressBar');
+  const fill       = document.getElementById('enrichProgressFill');
+  const status     = document.getElementById('enrichStatus');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Running…';
+  progressBar.style.display = '';
+  fill.style.width = '0%';
+  status.textContent = 'Connecting…';
 
   try {
     const res = await fetch(`/api/history/enrich/${extractionId}`, { method: 'POST' });
-    if (!res.body) throw new Error('Streaming not supported');
 
-    const reader = res.body.getReader();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `Server error ${res.status}`);
+    }
+    if (!res.body) throw new Error('Streaming not supported by browser');
+
+    const reader  = res.body.getReader();
     const decoder = new TextDecoder();
+    let   buffer  = '';
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const text = decoder.decode(value);
-      const lines = text.split('\n').filter(l => l.startsWith('data:'));
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Process all complete lines in the buffer
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep the last (possibly incomplete) line
+
       for (const line of lines) {
+        if (!line.startsWith('data:')) continue; // skip comments (": ping") and blanks
         try {
-          const msg = JSON.parse(line.slice(5));
-          if (msg.done) {
-            document.getElementById('enrichStatus').innerHTML =
-              `✅ Done: ${msg.enriched} enriched, ${msg.skipped} skipped, ${msg.failed} failed`;
-            document.getElementById('enrichProgressFill').style.width = '100%';
-          } else {
-            const pct2 = Math.round((msg.done2 / msg.total) * 100);
-            document.getElementById('enrichProgressFill').style.width = `${pct2}%`;
-            document.getElementById('enrichStatus').textContent = `(${msg.done2}/${msg.total}) ${msg.name}`;
+          const msg = JSON.parse(line.slice(5).trim());
+
+          if (msg.error) {
+            // Server reported an application-level error
+            throw new Error(msg.error);
+          } else if (msg.done) {
+            status.innerHTML =
+              `✅ Done: <strong>${msg.enriched}</strong> enriched, ` +
+              `${msg.skipped} skipped, ${msg.failed} failed out of ${msg.total} exhibitors`;
+            fill.style.width = '100%';
+          } else if (msg.done2 != null && msg.total > 0) {
+            const pct = Math.round((msg.done2 / msg.total) * 100);
+            fill.style.width = `${pct}%`;
+            status.textContent = `(${msg.done2} / ${msg.total}) ${msg.name || ''}`;
           }
-        } catch {}
+        } catch (parseErr) {
+          if (parseErr.message !== 'Unexpected token') throw parseErr; // re-throw real errors
+        }
       }
     }
+
+    // If stream ended without a "done" message, show a generic completion
+    if (!status.innerHTML.includes('✅')) {
+      status.textContent = 'Enrichment complete.';
+      fill.style.width = '100%';
+    }
   } catch (e) {
-    showToast('Enrichment error: ' + e.message, 'error');
-    document.getElementById('enrichStatus').textContent = 'Error: ' + e.message;
+    const msg = e.message || 'Unknown error';
+    showToast('Enrichment error: ' + msg, 'error');
+    status.textContent = '❌ Error: ' + msg;
+    fill.style.background = '#e53e3e';
   }
-  document.getElementById('startEnrichBtn').disabled = false;
-  document.getElementById('startEnrichBtn').textContent = '▶ Start Again';
+
+  btn.disabled = false;
+  btn.textContent = '▶ Start Again';
 }
 
 // ── Delete actions ────────────────────────────────────────────────────────────

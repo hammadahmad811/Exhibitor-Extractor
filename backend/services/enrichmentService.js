@@ -21,7 +21,7 @@
 import { updateExhibitorWebsite, getMissingWebsites } from '../database.js';
 
 const MIN_CONFIDENCE  = 0.5;    // below this we don't save
-const REQUEST_DELAY   = 800;    // ms between external API calls (rate limit)
+const REQUEST_DELAY   = 300;    // ms between external API calls (was 800 — reduced to prevent proxy timeouts)
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 

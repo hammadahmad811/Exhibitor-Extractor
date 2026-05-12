@@ -43,21 +43,39 @@ app.use('/api/history', historyRouter);
 // ── Enrichment SSE ────────────────────────────────────────────────────────────
 app.post('/api/history/enrich/:extractionId', async (req, res) => {
   const extractionId = Number(req.params.extractionId);
+  if (!extractionId || isNaN(extractionId)) {
+    return res.status(400).json({ error: 'Invalid extraction ID' });
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable Nginx buffering (Railway/proxy)
   res.flushHeaders();
+
+  // Send a keep-alive comment every 20 s so Railway's proxy doesn't kill the connection.
+  // SSE comment lines (": ping") are ignored by the client but keep TCP alive.
+  let alive = true;
+  const heartbeat = setInterval(() => {
+    if (alive) {
+      try { res.write(': ping\n\n'); } catch {}
+    }
+  }, 20_000);
+
+  const cleanup = () => { alive = false; clearInterval(heartbeat); };
+  req.on('close', cleanup);
 
   try {
     const result = await enrichExtraction(extractionId, (done2, total, name) => {
-      res.write(`data: ${JSON.stringify({ done2, total, name })}\n\n`);
+      if (alive) res.write(`data: ${JSON.stringify({ done2, total, name })}\n\n`);
     });
-    res.write(`data: ${JSON.stringify({ done: true, ...result })}\n\n`);
+    if (alive) res.write(`data: ${JSON.stringify({ done: true, ...result })}\n\n`);
   } catch (e) {
-    res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+    if (alive) res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+  } finally {
+    cleanup();
+    res.end();
   }
-  res.end();
 });
 
 // ── Health check ──────────────────────────────────────────────────────────────
