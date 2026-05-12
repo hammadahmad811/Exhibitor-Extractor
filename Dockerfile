@@ -1,41 +1,19 @@
 # ── Exhibitor Extractor — Production Dockerfile ───────────────────────────────
 # Builds the React frontend, then serves it from the Express backend.
-# Uses system Chromium so Playwright doesn't need to download a browser bundle.
+# Playwright installs its own bundled Chromium during the Docker build.
 #
 # Railway auto-detects this file and builds/runs the container.
 # ─────────────────────────────────────────────────────────────────────────────
 
 FROM node:24-bookworm-slim
 
-# ── System Chromium + headless browser dependencies ────────────────────────────
+# ── System dependencies required by Playwright's Chromium ─────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      chromium \
       ca-certificates \
-      fonts-liberation \
-      libasound2 \
-      libatk-bridge2.0-0 \
-      libatk1.0-0 \
-      libcairo2 \
-      libcups2 \
-      libdbus-1-3 \
-      libdrm2 \
-      libgbm1 \
-      libglib2.0-0 \
-      libnspr4 \
-      libnss3 \
-      libpango-1.0-0 \
-      libxcomposite1 \
-      libxdamage1 \
-      libxext6 \
-      libxfixes3 \
-      libxkbcommon0 \
-      libxrandr2 \
       wget \
+      # Playwright --with-deps will add the rest, but these are needed for npx to run
     && rm -rf /var/lib/apt/lists/*
 
-# Tell Playwright to skip downloading its bundled browser (we use system Chromium)
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV CHROMIUM_PATH=/usr/bin/chromium
 ENV PORT=3001
 # NOTE: NODE_ENV is intentionally NOT set here.
 # Setting NODE_ENV=production before "npm ci" causes npm to skip devDependencies
@@ -57,6 +35,11 @@ RUN cd frontend && npm run build
 # ── 2. Install backend production dependencies ────────────────────────────────
 COPY backend/package*.json ./backend/
 RUN cd backend && npm ci --omit=dev
+
+# ── 3. Install Playwright's bundled Chromium + all its system dependencies ────
+# This downloads the exact Chromium build Playwright expects and installs
+# all required OS libraries — far more reliable than using system Chromium.
+RUN cd backend && npx playwright install chromium --with-deps
 
 COPY backend/ ./backend/
 

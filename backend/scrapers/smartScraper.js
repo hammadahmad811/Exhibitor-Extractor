@@ -30,8 +30,8 @@ export async function runScraper(url, urlType, onProgress) {
   onProgress('Launching browser...', 5);
   let browser;
   try {
-    // In production (Railway/Docker), CHROMIUM_PATH points to the system Chromium binary.
-    // Locally, leave executablePath undefined so Playwright uses its own bundled browser.
+    // Playwright uses its own bundled Chromium in both local and production (Railway/Docker).
+    // CHROMIUM_PATH env var is optional — only set it to override with a system binary.
     const executablePath = process.env.CHROMIUM_PATH || undefined;
     browser = await chromium.launch({
       headless: true,
