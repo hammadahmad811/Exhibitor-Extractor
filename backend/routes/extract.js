@@ -146,28 +146,29 @@ async function runJob(jobId, eventName, urls) {
   job.progress = 90;
   job.message = 'Saving to history...';
 
-  if (allExhibitors.length > 0) {
-    const historyItem = {
-      id: jobId,
-      eventName,
-      urls,
-      urlType: detectUrlType(urls[0]),
-      extractedAt: new Date().toISOString(),
-      count: allExhibitors.length,
-      data: allExhibitors,
-    };
-    await saveHistory(historyItem);
+  console.log(`  [Extract] Job ${jobId} finished: ${allExhibitors.length} exhibitors for "${eventName}"`);
 
-    // ── Save to SQLite history database ──────────────────────────────────────
-    try {
-      const platform = detectUrlType(urls[0]);
-      saveExtraction({ eventName, sourceUrl: urls[0], platform, exhibitors: allExhibitors });
-      console.log(`  [DB] Saved ${allExhibitors.length} exhibitors to history DB`);
-    } catch (dbErr) {
-      console.warn('  [DB] Non-fatal: failed to save to history DB:', dbErr.message);
-    }
-    // ─────────────────────────────────────────────────────────────────────────
+  // Always save to history — even 0-result runs so users can see what happened.
+  const platform = detectUrlType(urls[0]);
+  const historyItem = {
+    id: jobId,
+    eventName,
+    urls,
+    urlType: platform,
+    extractedAt: new Date().toISOString(),
+    count: allExhibitors.length,
+    data: allExhibitors,
+  };
+  await saveHistory(historyItem);
+
+  // ── Save to SQLite history database ────────────────────────────────────────
+  try {
+    saveExtraction({ eventName, sourceUrl: urls[0], platform, exhibitors: allExhibitors });
+    console.log(`  [DB] Saved ${allExhibitors.length} exhibitors to history DB for "${eventName}"`);
+  } catch (dbErr) {
+    console.warn('  [DB] Failed to save to history DB:', dbErr.message);
   }
+  // ───────────────────────────────────────────────────────────────────────────
 
   job.progress = 100;
   job.data = allExhibitors;

@@ -355,13 +355,13 @@ export function getMissingWebsites(extractionId) {
 // ONE-TIME MIGRATION: import legacy history.json into SQLite
 // ══════════════════════════════════════════════════════════════════════════════
 
-import { readFileSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 
 export function migrateFromJson(historyJsonPath) {
-  const flagPath = historyJsonPath.replace('history.json', '.migrated');
-
-  // Skip if already migrated
-  if (existsSync(flagPath)) return { skipped: true };
+  // No longer uses a one-time flag — runs incrementally every boot,
+  // importing only history.json entries that are not yet in SQLite.
+  // This ensures extractions added to history.json after the original
+  // migration (or on any restart) are always picked up.
 
   if (!existsSync(historyJsonPath)) return { skipped: true, reason: 'no history.json' };
 
@@ -373,12 +373,16 @@ export function migrateFromJson(historyJsonPath) {
   }
 
   if (!Array.isArray(items) || items.length === 0) {
-    writeFileSync(flagPath, new Date().toISOString());
     return { migrated: 0 };
   }
 
   const db = getDb();
   let migrated = 0;
+
+  // Check if an extraction with the same source_url + date already exists
+  const checkDuplicate = db.prepare(`
+    SELECT id FROM extractions WHERE source_url = ? AND extraction_date = ? LIMIT 1
+  `);
 
   // Insert with preserved original extraction date
   const insertExtraction = db.prepare(`
@@ -396,12 +400,16 @@ export function migrateFromJson(historyJsonPath) {
 
   for (const item of sorted) {
     try {
-      const eventId      = upsertEvent(item.eventName || 'Unknown Event', (item.urls || [''])[0]);
       const exhibitors   = item.data || [];
-      const websiteCount = exhibitors.filter(e => e.website && e.website.trim()).length;
       const platform     = item.urlType || 'unknown';
       const date         = item.extractedAt || new Date().toISOString();
       const sourceUrl    = (item.urls || [''])[0];
+
+      // Skip if already in SQLite (deduplication for incremental runs)
+      if (checkDuplicate.get(sourceUrl, date)) continue;
+
+      const eventId      = upsertEvent(item.eventName || 'Unknown Event', sourceUrl);
+      const websiteCount = exhibitors.filter(e => e.website && e.website.trim()).length;
 
       const xInfo = insertExtraction.run(eventId, sourceUrl, platform, exhibitors.length, websiteCount, date);
       const extractionId = Number(xInfo.lastInsertRowid);
@@ -426,8 +434,6 @@ export function migrateFromJson(historyJsonPath) {
     }
   }
 
-  // Write flag so we never re-migrate
-  writeFileSync(flagPath, new Date().toISOString());
   return { migrated };
 }
 
