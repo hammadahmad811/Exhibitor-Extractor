@@ -30,9 +30,19 @@ export async function runScraper(url, urlType, onProgress) {
   onProgress('Launching browser...', 5);
   let browser;
   try {
+    // In production (Railway/Docker), CHROMIUM_PATH points to the system Chromium binary.
+    // Locally, leave executablePath undefined so Playwright uses its own bundled browser.
+    const executablePath = process.env.CHROMIUM_PATH || undefined;
     browser = await chromium.launch({
       headless: true,
-      args: ['--disable-blink-features=AutomationControlled'],
+      executablePath,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',                // required in Docker/container environments
+        '--disable-setuid-sandbox',    // required in Docker/container environments
+        '--disable-dev-shm-usage',     // prevents crashes on low-memory containers
+        '--disable-gpu',               // no GPU in headless container
+      ],
     });
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
