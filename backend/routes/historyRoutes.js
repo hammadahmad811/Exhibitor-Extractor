@@ -204,9 +204,16 @@ router.post('/extractions/:id/rerun', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx/Railway proxy buffering
   res.flushHeaders();
 
-  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  let alive = true;
+  // Heartbeat every 20s so Railway's proxy doesn't kill the long-running connection
+  const heartbeat = setInterval(() => { if (alive) { try { res.write(': ping\n\n'); } catch {} } }, 20_000);
+  const cleanup   = () => { alive = false; clearInterval(heartbeat); };
+  req.on('close', cleanup);
+
+  const send = (obj) => { if (alive) res.write(`data: ${JSON.stringify(obj)}\n\n`); };
 
   try {
     send({ type: 'progress', progress: 0, message: 'Starting re-run...' });
@@ -229,8 +236,10 @@ router.post('/extractions/:id/rerun', async (req, res) => {
     }
   } catch (e) {
     send({ type: 'error', message: e.message });
+  } finally {
+    cleanup();
+    res.end();
   }
-  res.end();
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

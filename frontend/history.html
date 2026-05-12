@@ -80,6 +80,7 @@ input, select, textarea { font-family: inherit; }
 .ti-bar-fill { height: 100%; background: linear-gradient(90deg, #3182ce, #805ad5); border-radius: 3px; transition: width 0.4s; }
 .ti-web-pct { font-size: 11px; color: #a0aec0; margin-top: 3px; }
 .timeline-item .ti-platform { font-size: 11px; background: #2d3748; color: #a0aec0; padding: 2px 7px; border-radius: 4px; }
+.timeline-item .ti-url { max-width: 220px; overflow: hidden; }
 .timeline-item .ti-actions { display: flex; gap: 6px; }
 .ti-check { width: 18px; height: 18px; border: 2px solid #4a5568; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.15s; }
 .ti-check.checked { background: #3182ce; border-color: #3182ce; }
@@ -377,7 +378,11 @@ function renderEventView(event) {
                 <div class="ti-web-pct">🌐 ${pct(x.website_count, x.total_count)}% have websites</div>
               </div>
               <div class="ti-platform">${platformBadgeText(x.platform)}</div>
+              <div class="ti-url" title="${esc(x.source_url || '')}">
+                <a href="${esc(x.source_url || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:11px;color:#4299e1;max-width:220px;display:inline-block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;">🔗 ${esc(truncateUrl(x.source_url || ''))}</a>
+              </div>
               <div class="ti-actions">
+                <button class="btn btn-primary" onclick="openRerunPanel(${x.id}, event)" title="Re-run extraction with same URL">▶ Re-run</button>
                 <button class="btn btn-orange" onclick="openEnrichPanel(${x.id}, event)" title="Enrich missing websites">🔍 Enrich</button>
                 <button class="btn btn-danger" onclick="deleteExtraction(${x.id}, ${event.id}, event)" title="Delete">🗑</button>
               </div>
@@ -414,16 +419,31 @@ function renderExtractionDetail(data) {
   const websitePct = pct(ex.filter(e => e.website).length, ex.length);
 
   sect.innerHTML = `
-    <div class="section-title">
-      Extraction — ${formatDateTime(data.extraction_date)} &nbsp;·&nbsp; ${ex.length.toLocaleString()} exhibitors
-      <button class="btn btn-ghost" style="margin-left:12px;padding:4px 10px;font-size:12px;" onclick="exportCsv(${data.id})">⬇ Export CSV</button>
+    <div class="section-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span>Extraction — ${formatDateTime(data.extraction_date)} &nbsp;·&nbsp; ${ex.length.toLocaleString()} exhibitors</span>
+      <div style="display:flex;gap:6px;margin-left:auto;">
+        <button class="btn btn-orange" id="enrichInlineBtn-${data.id}" style="padding:4px 12px;font-size:12px;" onclick="startInlineEnrich(${data.id})">🔍 Enrich Websites</button>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;" onclick="exportCsv(${data.id})">⬇ Export CSV</button>
+      </div>
     </div>
 
-    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">
+    <!-- Inline enrichment progress (shown when enrich is running) -->
+    <div id="inlineEnrichPanel-${data.id}" style="display:none;background:#161b27;border:1px solid #2d3748;border-radius:8px;padding:12px 16px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <span style="font-size:13px;font-weight:600;color:#e2e8f0;">🔍 Enriching Websites</span>
+        <span id="inlineEnrichCount-${data.id}" style="font-size:12px;color:#718096;"></span>
+      </div>
+      <div style="background:#2d3748;border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px;">
+        <div id="inlineEnrichFill-${data.id}" style="height:100%;width:0%;background:linear-gradient(90deg,#3182ce,#805ad5);transition:width 0.3s;border-radius:4px;"></div>
+      </div>
+      <div id="inlineEnrichStatus-${data.id}" style="font-size:12px;color:#a0aec0;margin-top:2px;"></div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap;" id="coverageBar-${data.id}">
       <span style="font-size:12px;color:#718096">Website coverage:</span>
       <div class="completeness" style="flex:1;max-width:300px;">
         <div class="cbar"><div class="cbar-fill ${websitePct>=70?'high':websitePct>=40?'medium':'low'}" style="width:${websitePct}%"></div></div>
-        <span style="font-size:12px;color:#a0aec0;min-width:35px">${websitePct}%</span>
+        <span style="font-size:12px;color:#a0aec0;min-width:35px" id="coveragePct-${data.id}">${websitePct}%</span>
       </div>
     </div>
 
@@ -730,6 +750,97 @@ async function startEnrichment(extractionId) {
   btn.textContent = '▶ Start Again';
 }
 
+// ── Re-run Panel ──────────────────────────────────────────────────────────────
+function openRerunPanel(extractionId, ev) {
+  ev.stopPropagation();
+  const sect = document.getElementById('detailSection');
+  sect.style.display = '';
+  sect.innerHTML = `
+    <div class="section-title">Re-run Extraction</div>
+    <div class="enrich-panel">
+      <h4>▶ Re-run Extraction</h4>
+      <p style="font-size:12px;color:#718096;margin-bottom:12px;">
+        This will re-scrape the same URL used for this extraction and save a new snapshot.
+        The previous data is preserved — a new timeline entry will be added.
+      </p>
+      <button class="btn btn-primary" id="startRerunBtn" onclick="startRerun(${extractionId})">▶ Start Re-run</button>
+      <div class="enrich-progress" style="display:none" id="rerunProgressBar">
+        <div class="enrich-progress-fill" id="rerunProgressFill" style="width:0%"></div>
+      </div>
+      <div class="enrich-status" id="rerunStatus"></div>
+    </div>
+  `;
+  sect.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function startRerun(extractionId) {
+  const btn        = document.getElementById('startRerunBtn');
+  const progressBar = document.getElementById('rerunProgressBar');
+  const fill       = document.getElementById('rerunProgressFill');
+  const status     = document.getElementById('rerunStatus');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Running…';
+  progressBar.style.display = '';
+  fill.style.width = '0%';
+  fill.style.background = 'linear-gradient(90deg,#3182ce,#805ad5)';
+  status.textContent = 'Connecting…';
+
+  try {
+    const res = await fetch(`/api/history/extractions/${extractionId}/rerun`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer    = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        let msg;
+        try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (msg.type === 'error') {
+          throw new Error(msg.message || 'Re-run failed');
+        } else if (msg.type === 'complete') {
+          status.innerHTML = `✅ Done! Extracted <strong>${msg.count}</strong> exhibitors. Refreshing…`;
+          fill.style.width = '100%';
+          setTimeout(() => {
+            // Reload the event detail to show the new timeline entry
+            loadEventDetail(activeEventId);
+          }, 1200);
+        } else if (msg.type === 'progress') {
+          const pctVal = Math.max(5, Math.min(95, msg.progress || 0));
+          fill.style.width = pctVal + '%';
+          status.textContent = msg.message || 'Running…';
+        }
+      }
+    }
+
+    if (!status.innerHTML.includes('✅')) {
+      status.textContent = 'Re-run complete. Refreshing…';
+      fill.style.width = '100%';
+      setTimeout(() => loadEventDetail(activeEventId), 1200);
+    }
+  } catch (e) {
+    const msg = e.message || 'Unknown error';
+    showToast('Re-run error: ' + msg, 'error');
+    status.textContent = '❌ Error: ' + msg;
+    fill.style.background = '#e53e3e';
+  }
+
+  btn.disabled = false;
+  btn.textContent = '▶ Start Again';
+}
+
 // ── Delete actions ────────────────────────────────────────────────────────────
 async function deleteEvent(id) {
   if (!confirm('Delete this event and ALL its extractions? This cannot be undone.')) return;
@@ -753,6 +864,83 @@ async function deleteExtraction(id, eventId, ev) {
     selectEvent(eventId);
   } catch (e) {
     showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+// ── Inline Enrichment (from extraction detail panel) ─────────────────────────
+async function startInlineEnrich(extractionId) {
+  const panel  = document.getElementById(`inlineEnrichPanel-${extractionId}`);
+  const fill   = document.getElementById(`inlineEnrichFill-${extractionId}`);
+  const status = document.getElementById(`inlineEnrichStatus-${extractionId}`);
+  const count  = document.getElementById(`inlineEnrichCount-${extractionId}`);
+  const btn    = document.getElementById(`enrichInlineBtn-${extractionId}`);
+
+  if (!panel) return;
+
+  // Show panel, disable button while running
+  panel.style.display = '';
+  fill.style.width = '0%';
+  fill.style.background = 'linear-gradient(90deg,#3182ce,#805ad5)';
+  status.textContent = 'Connecting…';
+  count.textContent  = '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Enriching…'; }
+
+  try {
+    const res = await fetch(`/api/history/enrich/${extractionId}`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer    = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        let msg;
+        try { msg = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (msg.error) {
+          throw new Error(msg.error);
+        } else if (msg.done) {
+          fill.style.width = '100%';
+          status.innerHTML =
+            `✅ Done: <strong>${msg.enriched}</strong> websites found, ` +
+            `${msg.skipped} skipped, ${msg.failed} failed out of ${msg.total}`;
+          count.textContent = `${msg.enriched}/${msg.total}`;
+          if (btn) { btn.disabled = false; btn.textContent = '🔍 Enrich Again'; }
+          // Refresh the table so new websites appear
+          setTimeout(() => openExtraction(extractionId), 900);
+          return;
+        } else if (msg.done2 != null && msg.total > 0) {
+          const pctVal = Math.max(2, Math.round((msg.done2 / msg.total) * 100));
+          fill.style.width = pctVal + '%';
+          status.textContent = msg.name ? `Enriching: ${msg.name}` : 'Running…';
+          count.textContent  = `${msg.done2} / ${msg.total}`;
+        }
+      }
+    }
+
+    // Stream ended without explicit done message
+    if (!status.innerHTML.includes('✅')) {
+      status.textContent = 'Enrichment complete.';
+      fill.style.width   = '100%';
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Enrich Again'; }
+      setTimeout(() => openExtraction(extractionId), 900);
+    }
+  } catch (e) {
+    const msg = e.message || 'Unknown error';
+    showToast('Enrichment error: ' + msg, 'error');
+    status.textContent      = '❌ Error: ' + msg;
+    fill.style.background   = '#e53e3e';
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Enrich Websites'; }
   }
 }
 
@@ -810,6 +998,15 @@ async function confirmRename() {
 function esc(s) {
   if (!s) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function truncateUrl(url) {
+  if (!url) return '';
+  try {
+    const u = new URL(url);
+    const path = u.pathname.length > 28 ? u.pathname.substring(0, 28) + '…' : u.pathname;
+    return u.hostname + path;
+  } catch { return url.length > 48 ? url.substring(0, 48) + '…' : url; }
 }
 
 function pct(a, b) {
