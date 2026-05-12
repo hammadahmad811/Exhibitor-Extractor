@@ -206,6 +206,28 @@ async function scrapeMYS(context, url, onProgress) {
     const boothMap = new Map(); // key → { name, booth, exhId, dims }
     let workingProxy = null;
 
+    // Helper: parse a GetBoothByHall COLUMNS/DATA response into boothMap entries
+    function parseBBH(data) {
+      const cols      = data.COLUMNS;
+      const boothIdx  = cols.indexOf('BOOTH');
+      const exhNameIdx= cols.indexOf('EXHNAME');
+      const exhIdIdx  = cols.indexOf('EXHID');
+      const dimsIdx   = cols.indexOf('BOOTHDIMS') >= 0 ? cols.indexOf('BOOTHDIMS') : cols.indexOf('DIMS');
+      let found = 0;
+      for (const row of data.DATA) {
+        const exhId = (row[exhIdIdx] || '').toString().trim();
+        const name  = exhNameIdx >= 0 ? (row[exhNameIdx] || '').toString().trim() : '';
+        if (!exhId && !name) continue;
+        const key = exhId || name;
+        if (!boothMap.has(key)) {
+          boothMap.set(key, { name, booth: (row[boothIdx] || '').toString().trim(), exhId,
+            dims: dimsIdx >= 0 ? (row[dimsIdx] || '').toString().trim() : '' });
+        }
+        found++;
+      }
+      return found;
+    }
+
     for (const hall of config.halls) {
       for (const proxyUrl of proxyCandidates) {
         try {
@@ -214,32 +236,76 @@ async function scrapeMYS(context, url, onProgress) {
             action: 'GetBoothByHall', method: 'GetBoothByHall',
             regid: config.regID, '_': String(Date.now()),
           });
-          const resp = await mysGet(proxyUrl + '?' + params, 25000);
+          // 60 s timeout — GetBoothByHall returns a large (~1.6 MB) geometry payload;
+          // 25 s was too short for some shows on Railway's slower containers.
+          const resp = await mysGet(proxyUrl + '?' + params, 60000);
           if (!resp) continue;
           const data = unwrapMYS(await resp.json().catch(() => null));
           if (!data) continue;
-          const cols = data.COLUMNS;
-          const boothIdx   = cols.indexOf('BOOTH');
-          const exhNameIdx = cols.indexOf('EXHNAME');   // may be -1 on newer MYS shows (e.g. NACS26)
-          const exhIdIdx   = cols.indexOf('EXHID');
-          const dimsIdx    = cols.indexOf('BOOTHDIMS') >= 0 ? cols.indexOf('BOOTHDIMS') : cols.indexOf('DIMS');
-          let found = 0;
-          for (const row of data.DATA) {
-            const exhId = (row[exhIdIdx] || '').toString().trim();
-            const name  = exhNameIdx >= 0 ? (row[exhNameIdx] || '').toString().trim() : '';
-            // Require at least exhId OR name — NACS26 omits EXHNAME so we key on exhId
-            if (!exhId && !name) continue;
-            const key = exhId || name;
-            if (!boothMap.has(key)) {
-              boothMap.set(key, { name, booth: (row[boothIdx] || '').toString().trim(), exhId,
-                dims: dimsIdx >= 0 ? (row[dimsIdx] || '').toString().trim() : '' });
-            }
-            found++;
-          }
+          const found = parseBBH(data);
           if (found > 0) { workingProxy = proxyUrl; break; }
         } catch (_) {}
       }
     }
+
+    // ── GetBoothByHall page.evaluate fallback ─────────────────────────────────
+    // If context.request couldn't fetch the large (~1.6 MB) booth payload (e.g. a
+    // Railway timeout or proxy mismatch), retry from inside the browser tab.
+    // The browser already has session cookies + the connection is already open, so
+    // even a 1.6 MB XHR finishes in < 3 s.
+    if (boothMap.size === 0) {
+      console.log('  [MYS] GetBoothByHall: context.request returned 0 — trying page.evaluate fallback');
+      onProgress('Fetching booth sizes via browser session...', 18);
+      const bbhItems = await page.evaluate(async (cfg) => {
+        function xhrJson(url) {
+          return new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url, true);
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            xhr.timeout = 120_000;
+            xhr.ontimeout = () => resolve(null);
+            xhr.onerror  = () => resolve(null);
+            xhr.onload   = () => { try { resolve(JSON.parse(xhr.responseText)); } catch { resolve(null); } };
+            xhr.send();
+          });
+        }
+        const results = [];
+        for (const hall of cfg.halls) {
+          const proxyBase = cfg.proxyBase || (cfg.origin + '/8_0/exhview/02/');
+          const url = `${proxyBase}exh-remote-proxy.cfm?showid=${cfg.showID}&selectedbooth=&hallid=${hall}&action=GetBoothByHall&method=GetBoothByHall&regid=${cfg.regID}&_=${Date.now()}`;
+          const raw = await xhrJson(url);
+          // Handle both direct {COLUMNS,DATA} and wrapped {success,data:{COLUMNS,DATA}}
+          const d = (raw && raw.COLUMNS && raw.DATA) ? raw
+                  : (raw && raw.success && raw.data && raw.data.COLUMNS) ? raw.data
+                  : null;
+          if (!d) continue;
+          const cols     = d.COLUMNS;
+          const exhIdIdx = cols.indexOf('EXHID');
+          const nameIdx  = cols.indexOf('EXHNAME');
+          const boothIdx = cols.indexOf('BOOTH');
+          const dimsIdx  = cols.indexOf('BOOTHDIMS') >= 0 ? cols.indexOf('BOOTHDIMS') : cols.indexOf('DIMS');
+          for (const row of d.DATA) {
+            const exhId = (row[exhIdIdx] || '').toString().trim();
+            const name  = nameIdx >= 0 ? (row[nameIdx] || '').toString().trim() : '';
+            if (!exhId && !name) continue;
+            results.push({
+              exhId,
+              name,
+              booth: (row[boothIdx] || '').toString().trim(),
+              dims:  dimsIdx >= 0 ? (row[dimsIdx] || '').toString().trim() : '',
+            });
+          }
+        }
+        return results;
+      }, config).catch(() => []);
+
+      for (const item of bbhItems) {
+        const key = item.exhId || item.name;
+        if (key && !boothMap.has(key)) boothMap.set(key, item);
+      }
+      console.log(`  [MYS] GetBoothByHall page.evaluate fallback: ${boothMap.size} records`);
+    }
+
     console.log(`  [MYS] GetBoothByHall: ${boothMap.size} named booth records`);
 
     // ── Step 3: getExhibitorsByKeyword paginated — PRIMARY exhibitor source ───
