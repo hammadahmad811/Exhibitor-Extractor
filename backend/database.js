@@ -96,12 +96,32 @@ export function normalizeName(name) {
 }
 
 // ── Slug from URL ──────────────────────────────────────────────────────────────
+// Produces a unique, stable key for each event URL so that two different shows
+// on the same platform (e.g. nacs26.mapyourshow.com vs nbaa26.mapyourshow.com)
+// never collide even though their URL paths are identical.
 export function slugFromUrl(url) {
   try {
-    const u     = new URL(url);
+    const u         = new URL(url);
+    const hostParts = u.hostname.split('.');
+    const subdomain = hostParts[0].toLowerCase();
+
+    // For subdomain-per-show platforms (MapYourShow, a2zinc, etc.) the subdomain
+    // IS the show identifier — use it directly so every show gets its own slug.
+    // Skip generic subdomains like "www", "web", "app", "events".
+    const genericSubdomains = new Set(['www', 'web', 'app', 'events', 'event', 'm', 'api']);
+    if (subdomain && !genericSubdomains.has(subdomain) && subdomain.length > 2) {
+      return subdomain; // e.g. 'nacs26', 'nbaa26', 'ces2026'
+    }
+
+    // For www-based platforms use a meaningful path segment, but skip common
+    // platform path tokens that would collide across shows.
+    const skipTokens = /^(public|eventmap|aspx|php|exhview|index|cfm|html|htm|default|home|shows|show|exhibitors|exhibitor|floorplan|sponsors|directory|8_0|6_0|7_0|v2|api)$/i;
     const parts = u.pathname.split('/').filter(Boolean);
-    const cand  = parts.find(p => p.length > 3 && !/^(public|eventmap|aspx|php)$/i.test(p));
-    return cand ? cand.toLowerCase() : u.hostname.split('.')[0].toLowerCase();
+    const cand  = parts.find(p => p.length > 3 && !skipTokens.test(p));
+
+    // Prefix with hostname base to guarantee cross-domain uniqueness
+    const hostBase = hostParts.slice(0, -1).join('-').toLowerCase(); // 'www-a2zinc'
+    return cand ? `${hostBase}-${cand}` : hostBase || subdomain;
   } catch {
     return 'unknown';
   }
@@ -126,8 +146,22 @@ function runTransaction(db, fn) {
 export function upsertEvent(eventName, sourceUrl) {
   const db   = getDb();
   const slug  = slugFromUrl(sourceUrl);
-  const existing = db.prepare('SELECT id FROM events WHERE slug = ?').get(slug);
-  if (existing) return existing.id;
+
+  // First try: match by slug — only reuse if the event name also matches
+  // (prevents two different shows from being collapsed under the same slug)
+  const bySlug = db.prepare('SELECT id, event_name FROM events WHERE slug = ?').get(slug);
+  if (bySlug) {
+    if (bySlug.event_name.toLowerCase() === eventName.toLowerCase()) return bySlug.id;
+    // Slug collision with a different event — create a new event with a URL-specific slug
+    const uniqueSlug = `${slug}-${Date.now()}`;
+    const info2 = db.prepare('INSERT INTO events (event_name, slug) VALUES (?, ?)').run(eventName, uniqueSlug);
+    return Number(info2.lastInsertRowid);
+  }
+
+  // Second try: match by exact event name (handles re-extractions with different URLs)
+  const byName = db.prepare('SELECT id FROM events WHERE LOWER(event_name) = LOWER(?)').get(eventName);
+  if (byName) return byName.id;
+
   const info = db.prepare('INSERT INTO events (event_name, slug) VALUES (?, ?)').run(eventName, slug);
   return Number(info.lastInsertRowid);
 }
