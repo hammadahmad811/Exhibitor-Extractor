@@ -23,6 +23,7 @@ function detectPlatform(url) {
   if (u.includes('bizzabo.com') || u.includes('bizzabo-reg.')) return 'bizzabo';
   if (u.includes('identiverse.com')) return 'identiverse';
   if (u.includes('electronica.de')) return 'electronica';
+  if (u.includes('coconnex.com'))   return 'coconnex';
   return 'generic';
 }
 
@@ -81,6 +82,8 @@ export async function runScraper(url, urlType, onProgress) {
       raw = await scrapeA2Z(context, url, onProgress);
     } else if (platform === 'electronica') {
       raw = await scrapeElectronica(context, url, onProgress);
+    } else if (platform === 'coconnex') {
+      raw = await scrapeCoconnex(context, url, onProgress);
     } else if (urlType === 'floor_plan') {
       raw = await scrapeFloorPlan(context, url, onProgress);
     } else {
@@ -2381,6 +2384,101 @@ function parseElectronicaHtml(html) {
     results.push({ name, boothNumber: booth, boothSize: '', website: '' });
   });
   return results;
+}
+
+// =============================================================================
+// COCONNEX  —  Drupal-based SVG floor plan (staticview)
+//
+// How it works:
+//   The page serves a static SVG floor plan with NO XHR exhibitor API calls.
+//   All exhibitor data is embedded directly in the rendered DOM SVG as three
+//   parallel groups of <text> elements:
+//     • #STANDS_TEXT_NUMBER  — booth/stand numbers  (390 elements)
+//     • #STANDS_TEXT_COMPANY — company/exhibitor names (385 elements)
+//     • #STANDS_TEXT_AREA    — booth area in sq ft    (390 elements)
+//
+//   Because the three groups have slightly different counts and are not
+//   index-aligned, we use nearest-neighbour spatial matching: each text
+//   element carries x/y coords + a transform matrix, which we collapse into
+//   a single rendered (rx, ry) point, then pair each company name with the
+//   closest booth number and closest area label by Euclidean distance.
+//   In practice the distances are tiny (< 200 SVG units), confirming accurate
+//   matches.
+//
+// URL pattern: https://{show}.coconnex.com/staticview/{base64token}
+// =============================================================================
+async function scrapeCoconnex(context, url, onProgress) {
+  const page = await context.newPage();
+  try {
+    onProgress('Loading Coconnex floor plan...', 5);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
+
+    // The SVGs are fetched and injected into the DOM by floorplan.js.
+    // Wait until the company-name group appears (signals both SVGs are rendered).
+    await page.waitForSelector('svg #STANDS_TEXT_COMPANY', { timeout: 30_000 }).catch(() => null);
+    await waitForContent(page);
+
+    onProgress('Extracting exhibitors from floor plan SVG...', 40);
+
+    const results = await page.evaluate(() => {
+      // Collapse a text element's (x, y, transform) into a single rendered point.
+      // transform is always matrix(1 0 0 -1 0 T) — a y-flip + translation.
+      function renderedCoords(el) {
+        const x = parseFloat(el.getAttribute('x') || 0);
+        const y = parseFloat(el.getAttribute('y') || 0);
+        const m = (el.getAttribute('transform') || '').match(/matrix\([^)]+\)/);
+        if (m) {
+          const [a, b, c, d, e, f] = m[0].replace('matrix(', '').replace(')', '').split(/[\s,]+/).map(Number);
+          return { rx: a * x + c * y + e, ry: b * x + d * y + f };
+        }
+        return { rx: x, ry: y };
+      }
+
+      // Extract all direct <text> children from an SVG group by ID.
+      function extractGroup(id) {
+        const g = document.querySelector('svg #' + id);
+        if (!g) return [];
+        return Array.from(g.children)
+          .filter(el => el.tagName === 'text' || el.tagName === 'TEXT')
+          .map(t => ({ text: t.textContent.trim(), ...renderedCoords(t) }))
+          .filter(item => item.text.length > 0);
+      }
+
+      // Find the candidate whose rendered position is nearest to target.
+      function nearest(target, candidates) {
+        let best = null, bestDist = Infinity;
+        for (const c of candidates) {
+          const d = Math.hypot(c.rx - target.rx, c.ry - target.ry);
+          if (d < bestDist) { bestDist = d; best = c; }
+        }
+        return best;
+      }
+
+      const numbers   = extractGroup('STANDS_TEXT_NUMBER');
+      const companies = extractGroup('STANDS_TEXT_COMPANY');
+      const areas     = extractGroup('STANDS_TEXT_AREA');
+
+      if (companies.length === 0) return [];
+
+      return companies.map(comp => {
+        const num  = nearest(comp, numbers);
+        const area = nearest(comp, areas);
+        return {
+          name:        comp.text,
+          boothNumber: num  ? num.text  : '',
+          boothSize:   area ? area.text + ' sq ft' : '',
+          website:     '',
+        };
+      }).filter(r => r.name);
+    });
+
+    console.log(`  [Coconnex] Extracted ${results.length} exhibitors`);
+    onProgress(`Extracted ${results.length} exhibitors`, 90);
+    return results;
+
+  } finally {
+    await page.close();
+  }
 }
 
 async function scrapeDirectory(context, url, onProgress) {
